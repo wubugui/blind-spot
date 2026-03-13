@@ -42,3 +42,8 @@ remote-*.py
 redeploy*.py
 test-*.py
 test-*.js
+
+# 敏感信息
+github-credentials.md
+*.token
+*.secret
