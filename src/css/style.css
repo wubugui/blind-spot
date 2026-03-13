@@ -1,0 +1,315 @@
+/* ===== 基础样式 ===== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #1a1a1a;
+  color: #fff;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+#game-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* ===== 场景区域 ===== */
+#scene-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #000;
+}
+
+#background-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;  /* 裁剪填充，无黑边 */
+  display: block;
+}
+
+#hotspots-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hotspot {
+  position: absolute;
+  background: rgba(255, 255, 0, 0.3);
+  border: 2px solid rgba(255, 255, 0, 0.6);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.hotspot:hover {
+  background: rgba(255, 255, 0, 0.5);
+  border-color: rgba(255, 255, 0, 0.9);
+}
+
+.hotspot.clicked {
+  background: rgba(255, 0, 0, 0.3);
+  border-color: rgba(255, 0, 0, 0.6);
+  cursor: default;
+}
+
+/* 疑点提示框 */
+#hotspot-tooltip {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.9);
+  border: 1px solid #666;
+  border-radius: 4px;
+  padding: 10px 15px;
+  max-width: 300px;
+  font-size: 14px;
+  line-height: 1.5;
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* ===== UI 区域 ===== */
+#ui-area {
+  background: linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%);
+  border-top: 2px solid #444;
+  padding: 15px 20px;
+  min-height: 280px;
+}
+
+/* 怀疑值进度条 */
+#suspicion-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px;
+  font-size: 14px;
+}
+
+#suspicion-bar {
+  flex: 1;
+  height: 20px;
+  background: #333;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+#suspicion-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4CAF50 0%, #FFC107 50%, #F44336 100%);
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+#suspicion-value {
+  min-width: 50px;
+  text-align: right;
+  font-weight: bold;
+}
+
+/* 对话框 */
+#dialogue-box {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+  min-height: 80px;
+}
+
+#npc-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+#npc-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid #666;
+}
+
+#npc-name {
+  font-weight: bold;
+  font-size: 16px;
+  color: #FFC107;
+}
+
+#npc-text {
+  font-size: 16px;
+  line-height: 1.6;
+  min-height: 40px;
+}
+
+/* 选项区域 */
+#options-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.option-btn {
+  background: linear-gradient(180deg, #3a3a3a 0%, #2a2a2a 100%);
+  border: 1px solid #555;
+  border-radius: 6px;
+  padding: 12px 20px;
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.option-btn:hover {
+  background: linear-gradient(180deg, #4a4a4a 0%, #3a3a3a 100%);
+  border-color: #777;
+  transform: translateX(5px);
+}
+
+.option-btn:active {
+  transform: translateX(5px) scale(0.98);
+}
+
+.option-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ===== 结局画面 ===== */
+#ending-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.95);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  text-align: center;
+  padding: 20px;
+}
+
+#ending-screen.hidden {
+  display: none;
+}
+
+#ending-title {
+  font-size: 48px;
+  margin-bottom: 20px;
+}
+
+#ending-title.win {
+  color: #4CAF50;
+}
+
+#ending-title.lose {
+  color: #F44336;
+}
+
+#ending-text {
+  font-size: 18px;
+  max-width: 600px;
+  line-height: 1.8;
+  margin-bottom: 40px;
+  color: #ccc;
+}
+
+#ending-screen button {
+  background: linear-gradient(180deg, #4a4a4a 0%, #2a2a2a 100%);
+  border: 1px solid #666;
+  border-radius: 6px;
+  padding: 12px 30px;
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  margin: 10px;
+  transition: all 0.2s ease;
+}
+
+#ending-screen button:hover {
+  background: linear-gradient(180deg, #5a5a5a 0%, #3a3a3a 100%);
+  border-color: #888;
+}
+
+/* ===== 响应式设计 ===== */
+@media (min-width: 768px) {
+  #options-container {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .option-btn {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .hotspot {
+    min-width: 30px;
+    min-height: 30px;
+  }
+}
+
+@media (max-width: 767px) {
+  #ui-area {
+    min-height: 320px;
+    padding: 10px;
+  }
+
+  #npc-text {
+    font-size: 14px;
+  }
+
+  .option-btn {
+    padding: 15px;
+    font-size: 14px;
+  }
+
+  .hotspot {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  #ending-title {
+    font-size: 32px;
+  }
+
+  #ending-text {
+    font-size: 16px;
+  }
+}
+
+/* ===== 工具类 ===== */
+.hidden {
+  display: none !important;
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

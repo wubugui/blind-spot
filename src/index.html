@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>盲点 Blind Spot</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="game-container">
+    <!-- 场景区域 -->
+    <div id="scene-area">
+      <img id="background-img" src="" alt="场景背景">
+      <div id="hotspots-container"></div>
+    </div>
+
+    <!-- UI 区域 -->
+    <div id="ui-area">
+      <!-- 怀疑值进度条 -->
+      <div id="suspicion-bar-container">
+        <span>怀疑值</span>
+        <div id="suspicion-bar">
+          <div id="suspicion-fill"></div>
+        </div>
+        <span id="suspicion-value">0/100</span>
+      </div>
+
+      <!-- 对话框 -->
+      <div id="dialogue-box">
+        <div id="npc-info">
+          <img id="npc-avatar" src="" alt="NPC">
+          <span id="npc-name"></span>
+        </div>
+        <div id="npc-text"></div>
+      </div>
+
+      <!-- 选项区域 -->
+      <div id="options-container"></div>
+    </div>
+
+    <!-- 结局画面 -->
+    <div id="ending-screen" class="hidden">
+      <h1 id="ending-title"></h1>
+      <p id="ending-text"></p>
+      <button id="restart-btn">重新开始</button>
+      <button id="menu-btn">返回菜单</button>
+    </div>
+  </div>
+
+  <!-- 游戏脚本 -->
+  <script src="js/utils.js"></script>
+  <script src="js/config-loader.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/scene.js"></script>
+  <script src="js/dialogue.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>

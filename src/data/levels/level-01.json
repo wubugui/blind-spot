@@ -1,0 +1,301 @@
+{
+  "version": "1.0",
+  "meta": {
+    "id": "level-01",
+    "name": "出租屋",
+    "description": "女人杀了人，盲人钢琴老师来调音",
+    "difficulty": 1,
+    "estimatedTime": 180
+  },
+  "scene": {
+    "background": "assets/backgrounds/rental-room.jpg",
+    "npc": {
+      "id": "woman",
+      "name": "房东太太",
+      "avatar": "",
+      "description": "30 多岁，神色紧张，手一直在抖"
+    },
+    "player": {
+      "role": "钢琴调音师",
+      "background": "你是盲人，被中介叫来这间出租屋调钢琴"
+    }
+  },
+  "hotspots": [
+    {
+      "id": "broken-glass",
+      "x": 0.30,
+      "y": 0.80,
+      "width": 0.10,
+      "height": 0.10,
+      "description": "脚下有 crunchy 的声音，像是踩到了碎玻璃...",
+      "suspicionDelta": 15,
+      "required": false,
+      "clickLimit": 1
+    },
+    {
+      "id": "piano",
+      "x": 0.15,
+      "y": 0.45,
+      "width": 0.25,
+      "height": 0.40,
+      "description": "钢琴就在这里，音确实不准，需要调一下...",
+      "suspicionDelta": 0,
+      "required": true,
+      "clickLimit": 99
+    },
+    {
+      "id": "bloodstain",
+      "x": 0.50,
+      "y": 0.75,
+      "width": 0.20,
+      "height": 0.15,
+      "description": "脚边地板摸起来有点粘，像是某种液体干了...",
+      "suspicionDelta": 25,
+      "required": false,
+      "clickLimit": 1
+    },
+    {
+      "id": "knife",
+      "x": 0.65,
+      "y": 0.70,
+      "width": 0.08,
+      "height": 0.10,
+      "description": "手碰到地上有个长条金属东西，像是刀...",
+      "suspicionDelta": 35,
+      "required": false,
+      "clickLimit": 1
+    },
+    {
+      "id": "window",
+      "x": 0.55,
+      "y": 0.30,
+      "width": 0.15,
+      "height": 0.20,
+      "description": "有风从那边吹过来，窗户应该是开着的...",
+      "suspicionDelta": 5,
+      "required": false,
+      "clickLimit": 2
+    },
+    {
+      "id": "kitchen",
+      "x": 0.75,
+      "y": 0.50,
+      "width": 0.20,
+      "height": 0.35,
+      "description": "那边应该是厨房，能闻到一些奇怪的味道...",
+      "suspicionDelta": 10,
+      "required": false,
+      "clickLimit": 1
+    },
+    {
+      "id": "sofa",
+      "x": 0.10,
+      "y": 0.60,
+      "width": 0.15,
+      "height": 0.25,
+      "description": "旁边有个沙发，坐垫有点凹陷，像是有人刚坐过...",
+      "suspicionDelta": 5,
+      "required": false,
+      "clickLimit": 1
+    }
+  ],
+  "dialogues": {
+    "opening": "你就是新来的钢琴老师？怎么现在才来...快进来吧。",
+    "rounds": [
+      {
+        "npc": "你是怎么找到这份工作的？",
+        "options": [
+          {
+            "text": "中介公司介绍的，说这里有架钢琴需要调",
+            "suspicionDelta": 0,
+            "feedback": "哦...中介啊。行吧，那你赶紧调，调完就走。",
+            "next": 1
+          },
+          {
+            "text": "你问这么细干嘛？",
+            "suspicionDelta": 20,
+            "feedback": "...没什么，随便问问。",
+            "next": 1
+          },
+          {
+            "text": "朋友推荐的",
+            "suspicionDelta": 5,
+            "feedback": "哪个朋友？我认识吗？",
+            "next": 1
+          }
+        ]
+      },
+      {
+        "npc": "刚才你在门口停了一下，听到什么了吗？",
+        "options": [
+          {
+            "text": "没有，我在找门牌号，这楼道太暗了",
+            "suspicionDelta": 0,
+            "feedback": "这样啊...这楼道的灯确实坏了好久了。",
+            "next": 2
+          },
+          {
+            "text": "好像有玻璃碎掉的声音",
+            "suspicionDelta": 30,
+            "feedback": "...",
+            "next": 2
+          },
+          {
+            "text": "你希望我听到什么？",
+            "suspicionDelta": 25,
+            "feedback": "没什么。快点调琴吧。",
+            "next": 2
+          }
+        ]
+      },
+      {
+        "npc": "你...手怎么这么凉？",
+        "options": [
+          {
+            "text": "外面风大，冻的",
+            "suspicionDelta": 0,
+            "feedback": "哦，那你赶紧干活吧，别磨蹭。",
+            "next": 3
+          },
+          {
+            "text": "我一直这样，血液循环不好",
+            "suspicionDelta": 5,
+            "feedback": "行吧。",
+            "next": 3
+          },
+          {
+            "text": "你管得着吗",
+            "suspicionDelta": 15,
+            "feedback": "脾气还挺大...",
+            "next": 3
+          }
+        ]
+      },
+      {
+        "npc": "对了，你进来的时候，有没有...闻到什么味道？",
+        "options": [
+          {
+            "text": "没有啊，我鼻子不太灵",
+            "suspicionDelta": 0,
+            "feedback": "那就好...可能是我多想了。",
+            "next": 4
+          },
+          {
+            "text": "有股腥味，怎么回事？",
+            "suspicionDelta": 40,
+            "feedback": "...",
+            "next": 4
+          },
+          {
+            "text": "你厨房是不是在炖肉？",
+            "suspicionDelta": 15,
+            "feedback": "啊...对，对，在炖肉。",
+            "next": 4
+          }
+        ]
+      },
+      {
+        "npc": "地上有点乱，刚才...不小心打翻了东西。",
+        "options": [
+          {
+            "text": "没关系，我看不见",
+            "suspicionDelta": 0,
+            "feedback": "那就好...你小心别踩到东西。",
+            "next": 5
+          },
+          {
+            "text": "打翻什么了？",
+            "suspicionDelta": 20,
+            "feedback": "没什么，一些玻璃杯而已。",
+            "next": 5
+          },
+          {
+            "text": "需要我帮你收拾吗？",
+            "suspicionDelta": 10,
+            "feedback": "不用不用，你调你的琴。",
+            "next": 5
+          }
+        ]
+      },
+      {
+        "npc": "行了，你调完了吗？",
+        "options": [
+          {
+            "text": "差不多了，再试试音",
+            "suspicionDelta": 0,
+            "feedback": "快点，我还有事。",
+            "next": 6
+          },
+          {
+            "text": "你这钢琴保养得不行啊，多久没调了？",
+            "suspicionDelta": 5,
+            "feedback": "不知道，前房客留下的。赶紧的。",
+            "next": 6
+          },
+          {
+            "text": "急什么，调琴得仔细",
+            "suspicionDelta": 10,
+            "feedback": "啧...行吧你慢慢调。",
+            "next": 6
+          }
+        ]
+      },
+      {
+        "npc": "好了吗？我可以送客了吗？",
+        "options": [
+          {
+            "text": "好了，谢谢。这是收据，您签个字",
+            "suspicionDelta": 0,
+            "feedback": "行...（签字声）好了，你可以走了。",
+            "next": 7
+          },
+          {
+            "text": "这么快赶我走？",
+            "suspicionDelta": 15,
+            "feedback": "我还有事，不方便多留。",
+            "next": 7
+          },
+          {
+            "text": "你这屋...还有其他人住吗？",
+            "suspicionDelta": 25,
+            "feedback": "你问这个干什么？",
+            "next": 7
+          }
+        ]
+      },
+      {
+        "npc": "走吧，我送你下楼。",
+        "options": [
+          {
+            "text": "不用了，我自己能走",
+            "suspicionDelta": 0,
+            "feedback": "那行，慢走。",
+            "next": 8
+          },
+          {
+            "text": "好，谢谢",
+            "suspicionDelta": 0,
+            "feedback": "嗯，下次有需要再叫你。",
+            "next": 8
+          },
+          {
+            "text": "你这语气...是怕我发现什么吗？",
+            "suspicionDelta": 50,
+            "feedback": "...",
+            "next": 8
+          }
+        ]
+      }
+    ],
+    "ending": {
+      "win": "（你听到关门的声音，女人松了口气）\n\n行了，钢琴你调好了。今天的事...别跟别人说。走吧，我不送你了。\n\n【胜利】你成功隐藏了身份，安全离开了现场。",
+      "lose": "（你突然感觉到一只手掐住了你的脖子）\n\n等等...你刚才说的那个细节，不可能是盲人能注意到的。你到底是谁？是不是看到了什么？\n\n对不起...为了保密，我只能这样了。\n\n【失败】你暴露了身份，被女人灭口。"
+    }
+  },
+  "rules": {
+    "maxSuspicion": 100,
+    "failThreshold": 60,
+    "minRounds": 5,
+    "clickPenalty": true
+  }
+}

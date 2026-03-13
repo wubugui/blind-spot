@@ -1,0 +1,44 @@
+# 依赖
+node_modules/
+package-lock.json
+
+# 构建输出
+builds/
+dist/
+*.tar.gz
+
+# 临时文件
+*.log
+.DS_Store
+Thumbs.db
+
+# 测试文件
+test-*.png
+test-*.jpg
+*.screenshot
+
+# 部署配置
+.vercel/
+
+# 敏感信息
+.env
+.env.local
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+deploy-*.py
+upload-*.py
+check-*.py
+remote-*.py
+redeploy*.py
+test-*.py
+test-*.js

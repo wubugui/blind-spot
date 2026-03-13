@@ -1,0 +1,50 @@
+{
+  "name": "blind-spot",
+  "version": "0.1.0",
+  "description": "盲点 - 点击式视觉推理小说游戏",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "npx http-server src -p 3000 -o",
+    "dev": "npx http-server src -p 3000 -o --watch",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "validate": "node tools/validate-level.js"
+  },
+  "keywords": [
+    "game",
+    "visual-novel",
+    "mystery"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "http-server": "^14.1.1"
+  },
+  "build": {
+    "appId": "com.blindspot.game",
+    "productName": "盲点",
+    "directories": {
+      "output": "builds"
+    },
+    "files": [
+      "src/**/*",
+      "electron/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "deb"
+    }
+  }
+}
