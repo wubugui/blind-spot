@@ -176,12 +176,53 @@ class ControlConfig:
 
 @dataclass
 class AtmosphereConfig:
-    """大气模块配置(阶段1只用 constant 模型;阶段5扩展 ISA/分层风/湍流/阵风)。"""
-    model: str = "constant"              # constant | isa(阶段5)
+    """大气模块配置。
+
+    model:
+      constant — 常密度+常值风(室内/单元测试)
+      isa      — ISA 标准大气剖面 + 分层风(层间线性插值) + 湍流 + 阵风
+    风层格式:(高度m, 风速m/s, 吹向方位角deg)。注意此处方位角为"风的去向"
+    (0°=吹向北,90°=吹向东),与气象学"来向"惯例相反,便于直接合成矢量。
+    """
+    model: str = "constant"              # constant | isa
     rho_const_kg_m3: float = 1.225       # constant 模型空气密度(ISA 海平面)
     temperature_const_K: float = 288.15
     pressure_const_Pa: float = 101325.0
     wind_ned_m_s: tuple[float, float, float] = (0.0, 0.0, 0.0)  # 常值风(世界系 NED)
+
+    # ---- isa 模型参数 ----
+    ground_alt_m: float = 0.0            # 仿真 z=0 对应的海拔(高空模式设为放飞点海拔)
+    dT_K: float = 0.0                    # 温度偏移 ΔT(冷/热天整体平移)。
+    # [假设] ΔT 只平移温度、不改气压剖面,密度按 ρ=p/(R(T+ΔT)) / 与"热天密度低"
+    #   的工程经验一致 / 需要精确非标准大气时应使用实测探空数据
+    wind_layers: tuple = ()              # ((alt_m, speed_m_s, dir_to_deg), ...) 按高度升序
+    turbulence_intensity: float = 0.0    # 湍流强度倍率:0=关,1=标准(σ剖面见 atmosphere.py)
+    turb_update_dt_s: float = 0.01       # 湍流状态更新步长(100Hz)
+
+
+@dataclass
+class HeliumThermalConfig:
+    """氦气热力学(可开关,高空模式用):一阶热模型。
+
+        m_he·c_p·dT_he/dt = Q_solar − h·A_surf·(T_he − T_amb)
+        Q_solar = absorptivity · flux · A_proj   (太阳辐照开启时)
+        ρ_he = p_amb / (R_eff · T_he)            (囊体排气孔通大气,内外压差≈0)
+
+    superheat(T_he−T_amb)降低氦气密度→减少氦气质量(定容排气)→增大净浮力。
+    [假设] 囊内氦气温度均匀(集总参数)、与环境只经囊膜一阶换热,h=3 W/m²K
+      (自然对流典型值 2~5) / 时间常数 m·c_p/(hA) ≈ 50s,量级正确
+      / 需要分层温度场或强迫对流(高速飞行)时失效。
+    [假设] 囊内气体用等效气体常数 R_eff = p₀/(ρ_he_cfg·T₀)(含杂质,与配平密度自洽)
+      / 保证 T_he=T_amb 时回到配置浮力 / 纯度变化大时需重新标定。
+    [假设] 吸收率 0.2(白色/银色囊膜),太阳辐照默认 1000 W/m²(地面晴天;
+      高空可调至 1361) / 决定平衡 superheat ≈ Q/(hA) ≈ 20K,与飞艇实测 10~30K 一致。
+    """
+    enabled: bool = False
+    solar_on: bool = False               # 白天/夜间切换(运行时可改)
+    solar_flux_W_m2: float = 1000.0
+    absorptivity: float = 0.2
+    h_film_W_m2K: float = 3.0
+    cp_J_kgK: float = 5193.0             # 氦定压比热
 
 
 @dataclass
@@ -197,6 +238,7 @@ class SimConfig:
     sensor: SensorConfig = field(default_factory=SensorConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
     atmosphere: AtmosphereConfig = field(default_factory=AtmosphereConfig)
+    helium: HeliumThermalConfig = field(default_factory=HeliumThermalConfig)
 
     # ---- 序列化(可复现性要求) ----
     def to_json(self) -> str:
@@ -229,10 +271,14 @@ def _from_dict(cls, d):
             sub = f.default_factory() if f.default_factory is not dataclasses.MISSING else None
             kwargs[f.name] = _from_dict(type(sub), v) if sub is not None else v
         elif isinstance(v, list):
-            kwargs[f.name] = tuple(v)
+            kwargs[f.name] = _deep_tuple(v)
         else:
             kwargs[f.name] = v
     return cls(**kwargs)
+
+
+def _deep_tuple(v):
+    return tuple(_deep_tuple(x) if isinstance(x, list) else x for x in v)
 
 
 def default_config(heaviness_kg: float = 0.005) -> SimConfig:

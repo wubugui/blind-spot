@@ -38,7 +38,8 @@ from .added_mass import added_mass_matrix_unit_rho
 from .aero import AeroModel
 from .atmosphere import Atmosphere
 from .config import GRAVITY_M_S2, SimConfig
-from .math3d import quat_derivative, quat_normalize, quat_to_rotmat, skew
+from .math3d import (cross3, quat_derivative, quat_normalize,
+                     quat_to_rotmat, skew)
 
 STATE_DIM = 16
 IDX_POS = slice(0, 3)
@@ -58,12 +59,14 @@ class MassProperties:
     M_A_unit_rho: np.ndarray     # 6×6 附加质量矩阵 / ρ
 
 
-def build_mass_properties(cfg: SimConfig) -> MassProperties:
+def build_mass_properties(cfg: SimConfig,
+                          m_helium_kg: float | None = None) -> MassProperties:
+    """m_helium_kg 缺省由配置密度×体积得出;氦气热力学开启时由外部传入实时值。"""
     hull, mass = cfg.hull, cfg.mass
     a, b = hull.a_m, hull.b_m
     v_m3 = hull.volume_m3
     m_env = mass.m_envelope_kg
-    m_he = mass.rho_helium_kg_m3 * v_m3
+    m_he = m_helium_kg if m_helium_kg is not None else mass.rho_helium_kg_m3 * v_m3
     m_gon = mass.m_gondola_kg
     m_total = m_env + m_he + m_gon
     r_gon = np.array(mass.r_gondola_b_m)
@@ -133,6 +136,26 @@ class AirshipDynamics:
         self._thrust_max_N = act.thrust_max_N
         self._tau_s = act.tau_s
         self._volume_m3 = cfg.hull.volume_m3
+        self._minv_rho_key: float | None = None
+        self._minv: np.ndarray | None = None
+
+    def set_helium_mass(self, m_helium_kg: float) -> None:
+        """氦气热力学(superheat 排气)实时更新质量属性。"""
+        self.props = build_mass_properties(self.cfg, m_helium_kg=m_helium_kg)
+        self._minv_rho_key = None   # 质量变化 → 缓存失效
+
+    def _mass_matrix_inv(self, rho_kg_m3: float) -> np.ndarray:
+        """(M_RB + ρ·M_A/ρ)⁻¹,按密度缓存。
+
+        密度量化到 4 位有效数字(相对 1e-4):悬停高度变化引起的 ρ 微变不触发重算,
+        引入的质量矩阵误差 ≤0.01%,远小于气动系数 ±30% 的模型不确定度;
+        浮力等力项仍用精确 ρ。
+        """
+        key = float(f"{rho_kg_m3:.4e}")
+        if key != self._minv_rho_key:
+            self._minv_rho_key = key
+            self._minv = np.linalg.inv(self.props.M_RB + key * self.props.M_A_unit_rho)
+        return self._minv
 
     def initial_state(self, p_ned_m=(0.0, 0.0, 0.0), q=(1.0, 0.0, 0.0, 0.0)) -> np.ndarray:
         x = np.zeros(STATE_DIM)
@@ -164,7 +187,7 @@ class AirshipDynamics:
         # 重力(作用在重心)
         f_grav_b = R.T @ np.array([0.0, 0.0, pr.m_total_kg * GRAVITY_M_S2])
         tau[0:3] += f_grav_b
-        tau[3:6] += np.cross(pr.r_g_b_m, f_grav_b)
+        tau[3:6] += cross3(pr.r_g_b_m, f_grav_b)
         # 浮力(作用在浮心,当地密度实时计算)
         f_buoy_b = R.T @ np.array([0.0, 0.0, -rho * self._volume_m3 * GRAVITY_M_S2])
         tau[0:3] += f_buoy_b
@@ -176,7 +199,7 @@ class AirshipDynamics:
         ])
         for r_m, f_m in zip(self._r_motors, f_motors_b):
             tau[0:3] += f_m
-            tau[3:6] += np.cross(r_m, f_m)
+            tau[3:6] += cross3(r_m, f_m)
         # 气动阻力与转动阻尼(用气流相对速度)
         f_aero, m_aero = self.aero.forces_moments(nu_r, rho)
         tau[0:3] += f_aero
@@ -184,12 +207,11 @@ class AirshipDynamics:
 
         # ---- 质量矩阵与科氏项 ----
         M_A = rho * pr.M_A_unit_rho
-        M = pr.M_RB + M_A
         rhs = tau - coriolis_times_nu(pr.M_RB, nu, nu) - coriolis_times_nu(M_A, nu_r, nu_r)
         # 常值世界风的 ν̇_c 修正项(见模块 docstring)
-        dnu_c = np.concatenate([-np.cross(nu[3:6], wind_b), np.zeros(3)])
+        dnu_c = np.concatenate([-cross3(nu[3:6], wind_b), np.zeros(3)])
         rhs += M_A @ dnu_c
-        nu_dot = np.linalg.solve(M, rhs)
+        nu_dot = self._mass_matrix_inv(rho) @ rhs
 
         # ---- 运动学与执行器 ----
         dx = np.empty(STATE_DIM)

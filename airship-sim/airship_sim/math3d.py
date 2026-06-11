@@ -84,6 +84,14 @@ def quat_to_euler(q: np.ndarray) -> tuple[float, float, float]:
     return float(roll), float(pitch), float(yaw)
 
 
+def cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """3 维叉积。等价 np.cross,但避开其对小向量的巨大调用开销
+    (np.cross 走通用 moveaxis 路径,~50µs/次;此实现 ~3µs,动力学热点)。"""
+    return np.array([a[1] * b[2] - a[2] * b[1],
+                     a[2] * b[0] - a[0] * b[2],
+                     a[0] * b[1] - a[1] * b[0]])
+
+
 def skew(v: np.ndarray) -> np.ndarray:
     """反对称矩阵 S(v),使 S(v) @ u = v × u。"""
     return np.array([

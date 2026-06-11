@@ -145,3 +145,64 @@ async def _integration():
 
 def test_server_integration():
     asyncio.run(asyncio.wait_for(_integration(), 60))
+
+
+async def _atmo_integration():
+    from airship_sim.atmosphere import wind_layers_low_altitude
+    cfg = default_config()
+    cfg.atmosphere.model = "isa"
+    cfg.atmosphere.wind_layers = wind_layers_low_altitude()
+    cfg.helium.enabled = True
+    server = RealtimeServer(cfg, host="127.0.0.1", ws_port=0, http_port=0)
+    server.time_scale = 0.2
+    task = asyncio.create_task(server.serve())
+    try:
+        await asyncio.wait_for(server.ready.wait(), 5)
+        async with websockets.connect(f"ws://127.0.0.1:{server.ws_port}/") as ws:
+            m = await _recv_state(ws)
+            assert m["atmosphere"]["model"] == "isa"
+            assert len(m["atmosphere"]["wind_layers"]) == 7
+            assert m["atmosphere"]["helium"]["enabled"] is True
+
+            # 大气参数热更新
+            await ws.send(json.dumps({"type": "set_atmosphere", "dT_K": 10.0,
+                                      "turbulence_intensity": 0.8}))
+            await ws.send(json.dumps({"type": "set_wind_layer", "index": 0,
+                                      "speed_m_s": 5.0}))
+            await asyncio.sleep(0.15)
+            m = await _drain_then_recv(ws)
+            assert m["atmosphere"]["dT_K"] == 10.0
+            assert m["atmosphere"]["turbulence_intensity"] == 0.8
+            assert m["atmosphere"]["wind_layers"][0][1] == 5.0
+
+            # 剖面查询
+            await ws.send(json.dumps({"type": "get_profile"}))
+            prof = None
+            for _ in range(80):   # 状态广播与剖面答复混流,过滤
+                r = json.loads(await asyncio.wait_for(ws.recv(), 2))
+                if r["type"] == "profile":
+                    prof = r
+                    break
+            assert prof is not None
+            assert len(prof["alt_m"]) == len(prof["wind_speed_m_s"]) \
+                == len(prof["rho_kg_m3"])
+            assert prof["alt_m"][-1] == 100.0          # 低空预置顶层
+            assert prof["rho_kg_m3"][0] > prof["rho_kg_m3"][-1]  # 密度随高度降
+
+            # 阵风触发(无异常即可,风场效果由 test_atmosphere 覆盖)
+            await ws.send(json.dumps({"type": "gust", "dir_deg": 0.0,
+                                      "amplitude_m_s": 1.0, "duration_s": 2.0}))
+            await ws.send(json.dumps({"type": "set_solar", "on": True}))
+            await asyncio.sleep(0.15)
+            m = await _drain_then_recv(ws)
+            assert m["atmosphere"]["helium"]["solar_on"] is True
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+def test_server_atmosphere_protocol():
+    asyncio.run(asyncio.wait_for(_atmo_integration(), 60))

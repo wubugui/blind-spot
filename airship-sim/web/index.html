@@ -61,6 +61,31 @@
   <h3>PID 增益(拖动即实时生效)</h3>
   <div id="gains"></div>
   <div class="hint">输出限幅/滤波等高级参数见 config.py;此处只暴露 kp/ki/kd。</div>
+
+  <h3>大气</h3>
+  <div id="atmoNA" class="hint">当前为室内常密度模型;以 --atmo low / high 启动可启用 ISA 大气面板。</div>
+  <div id="atmo" style="display:none">
+    <div class="row"><label>ΔT K</label>
+      <input type="range" id="atDT" min="-20" max="20" step="0.5" value="0"><span class="val" id="atDTv">0</span></div>
+    <div class="row"><label>湍流</label>
+      <input type="range" id="atTurb" min="0" max="2" step="0.05" value="0"><span class="val" id="atTurbv">0</span></div>
+    <div class="row"><label>预置</label>
+      <button data-preset="calm">无风</button>
+      <button data-preset="low">低空边界层</button>
+      <button data-preset="high">高空0-30km</button></div>
+    <div id="windLayers"></div>
+    <div class="row"><label>阵风</label>
+      向<input type="number" id="gustDir" value="90" style="width:48px">°
+      幅<input type="number" id="gustAmp" value="1.0" step="0.2" style="width:48px">m/s
+      时<input type="number" id="gustDur" value="3" step="0.5" style="width:42px">s
+      <button id="btnGust">触发</button></div>
+    <div class="row"><label>太阳辐照</label>
+      <input type="checkbox" id="atSolar">
+      <input type="number" id="atFlux" value="1000" step="100" style="width:64px">W/m²
+      <span id="heInfo" class="hint"></span></div>
+    <div class="hint">垂直剖面:左=风速(箭头为风向,上北),右=密度;横线=飞艇当前高度</div>
+    <canvas class="chart" id="chartProfile" style="height:220px"></canvas>
+  </div>
 </div>
 
 <!--
@@ -206,10 +231,18 @@ let ws = null, lastState = null, lastResetT = 0;
 function send(obj){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 function connect() {
   ws = new WebSocket(`ws://${location.hostname}:8765/`);
-  ws.onopen = () => { connEl.textContent = 'online'; connEl.className = 'ok'; };
+  ws.onopen = () => {
+    connEl.textContent = 'online'; connEl.className = 'ok';
+    send({type:'get_profile'});
+  };
   ws.onclose = () => { connEl.textContent = 'offline – retrying'; connEl.className = 'bad'; setTimeout(connect, 1000); };
   ws.onerror = () => ws.close();
-  ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.type === 'state') onState(m); };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'state') onState(m);
+    else if (m.type === 'profile') { profileData = m; }
+    else if (m.type === 'error') console.warn('server:', m.message);
+  };
 }
 connect();
 
@@ -246,6 +279,7 @@ function onState(m) {
   btnMode.textContent = `模式: ${m.manual ? 'MANUAL' : 'AUTO'}`;
   btnMode.classList.toggle('active', m.manual);
   if (first) buildGainSliders(m.gains);
+  updateAtmoPanel(m, first);
 }
 
 // ============ 控制面板 ============
@@ -323,6 +357,128 @@ addEventListener('keyup', e => {
   if ('wasdqe'.includes(k)) { keys[k] = false; updateManual(); }
 });
 
+// ============ 大气面板 ============
+let profileData = null, atmoBuilt = false, layerCount = -1;
+const atDT = document.getElementById('atDT'), atTurb = document.getElementById('atTurb');
+const reqProfile = (() => {        // 改动后延迟重取剖面(去抖)
+  let timer = null;
+  return () => { clearTimeout(timer); timer = setTimeout(() => send({type:'get_profile'}), 300); };
+})();
+
+atDT.oninput = () => {
+  document.getElementById('atDTv').textContent = atDT.value;
+  send({type:'set_atmosphere', dT_K: parseFloat(atDT.value)}); reqProfile();
+};
+atTurb.oninput = () => {
+  document.getElementById('atTurbv').textContent = atTurb.value;
+  send({type:'set_atmosphere', turbulence_intensity: parseFloat(atTurb.value)});
+};
+document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
+  send({type:'set_wind_preset', preset: b.dataset.preset});
+  layerCount = -1;   // 触发风层行重建
+  reqProfile();
+});
+document.getElementById('btnGust').onclick = () => send({type:'gust',
+  dir_deg: parseFloat(gustDir.value), amplitude_m_s: parseFloat(gustAmp.value),
+  duration_s: parseFloat(gustDur.value)});
+const gustDir = document.getElementById('gustDir'), gustAmp = document.getElementById('gustAmp'),
+      gustDur = document.getElementById('gustDur');
+document.getElementById('atSolar').onchange = e => send({type:'set_solar', on: e.target.checked});
+document.getElementById('atFlux').onchange = e => send({type:'set_solar', flux_W_m2: parseFloat(e.target.value)});
+
+function buildWindLayerRows(layers) {
+  const div = document.getElementById('windLayers');
+  div.innerHTML = '';
+  layers.forEach((l, i) => {
+    const row = document.createElement('div'); row.className = 'row';
+    const altLabel = l[0] >= 1000 ? (l[0]/1000)+'km' : l[0]+'m';
+    row.innerHTML = `<label>${altLabel}</label>
+      速<input type="range" min="0" max="30" step="0.1" value="${l[1]}" data-k="speed">
+      <span class="val">${l[1].toFixed(1)}</span>
+      向<input type="range" min="0" max="360" step="5" value="${(l[2]+360)%360}" data-k="dir">
+      <span class="val">${Math.round((l[2]+360)%360)}°</span>`;
+    const [sSpd, sDir] = row.querySelectorAll('input');
+    const [vSpd, vDir] = row.querySelectorAll('.val');
+    sSpd.oninput = () => { vSpd.textContent = parseFloat(sSpd.value).toFixed(1);
+      send({type:'set_wind_layer', index: i, speed_m_s: parseFloat(sSpd.value)}); reqProfile(); };
+    sDir.oninput = () => { vDir.textContent = Math.round(sDir.value)+'°';
+      send({type:'set_wind_layer', index: i, dir_deg: parseFloat(sDir.value)}); reqProfile(); };
+    div.appendChild(row);
+  });
+}
+
+function updateAtmoPanel(m, first) {
+  const has = !!m.atmosphere;
+  document.getElementById('atmo').style.display = has ? '' : 'none';
+  document.getElementById('atmoNA').style.display = has ? 'none' : '';
+  if (!has) return;
+  const a = m.atmosphere;
+  if (!atmoBuilt) {           // 初始化滑块位置(只在首次,避免覆盖拖动)
+    atDT.value = a.dT_K; document.getElementById('atDTv').textContent = a.dT_K;
+    atTurb.value = a.turbulence_intensity;
+    document.getElementById('atTurbv').textContent = a.turbulence_intensity;
+    document.getElementById('atSolar').checked = a.helium.solar_on;
+    atmoBuilt = true;
+  }
+  if (a.wind_layers.length !== layerCount) {
+    layerCount = a.wind_layers.length;
+    buildWindLayerRows(a.wind_layers);
+  }
+  document.getElementById('heInfo').textContent = a.helium.enabled
+    ? `superheat ${a.helium.superheat_K.toFixed(1)}K  m_He ${(a.helium.m_kg*1000).toFixed(1)}g`
+    : '(氦气热力学未开启)';
+}
+
+// 垂直剖面图:左=高度-风速(箭头示风向),右=高度-密度,横线=当前高度
+const profCv = document.getElementById('chartProfile');
+function drawProfile() {
+  const ctx = profCv.getContext('2d');
+  if (profCv.width !== profCv.clientWidth*2) { profCv.width = profCv.clientWidth*2; profCv.height = profCv.clientHeight*2; }
+  const W = profCv.width, H = profCv.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!profileData) return;
+  const p = profileData;
+  const n = p.alt_m.length;
+  const altMax = Math.max(p.alt_m[n-1], 1);
+  const Y = a => H - 24 - (a/altMax) * (H-48);
+  const half = W/2 - 30;
+  // 左:风速
+  const sMax = Math.max(...p.wind_speed_m_s, 1);
+  ctx.strokeStyle = '#2fb3c7'; ctx.lineWidth = 2.5; ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = 10 + p.wind_speed_m_s[i]/sMax * (half-20);
+    i ? ctx.lineTo(x, Y(p.alt_m[i])) : ctx.moveTo(x, Y(p.alt_m[i]));
+  }
+  ctx.stroke();
+  // 风向箭头(上=北),每 5 个点画一个
+  ctx.strokeStyle = '#7d8ea6'; ctx.lineWidth = 2;
+  for (let i = 0; i < n; i += 5) {
+    const x = 10 + p.wind_speed_m_s[i]/sMax * (half-20), y = Y(p.alt_m[i]);
+    const a = (p.wind_dir_deg[i]) * Math.PI/180, L = 16;
+    ctx.beginPath(); ctx.moveTo(x, y);
+    ctx.lineTo(x + L*Math.sin(a), y - L*Math.cos(a)); ctx.stroke();
+  }
+  // 右:密度
+  const rMin = Math.min(...p.rho_kg_m3), rMax = Math.max(...p.rho_kg_m3);
+  const span = Math.max(rMax - rMin, 1e-6);
+  ctx.strokeStyle = '#e8923a'; ctx.lineWidth = 2.5; ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = W/2 + 10 + (p.rho_kg_m3[i]-rMin)/span * (half-20);
+    i ? ctx.lineTo(x, Y(p.alt_m[i])) : ctx.moveTo(x, Y(p.alt_m[i]));
+  }
+  ctx.stroke();
+  // 当前高度横线
+  if (lastState && lastState.atmosphere) {
+    const y = Y(Math.min(lastState.atmosphere.alt_m, altMax));
+    ctx.strokeStyle = '#d96a3b'; ctx.setLineDash([6,6]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.font = '18px ui-monospace'; ctx.fillStyle = '#5e6b7d';
+  ctx.fillText(`wind 0~${sMax.toFixed(1)} m/s`, 10, H-6);
+  ctx.fillText(`ρ ${rMin.toFixed(3)}~${rMax.toFixed(3)}`, W/2+10, H-6);
+  ctx.fillText(`alt 0~${altMax >= 1000 ? (altMax/1000).toFixed(0)+'km' : altMax.toFixed(0)+'m'}`, 10, 20);
+}
+
 // ============ 渲染循环(只画,不算) ============
 resize();
 (function animate(){
@@ -330,6 +486,7 @@ resize();
   controls.update();
   renderer.render(scene, camera);
   chAlt.draw(); chYaw.draw(); chSpd.draw();
+  drawProfile();
 })();
 </script>
 </body>

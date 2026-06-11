@@ -45,7 +45,9 @@ class History:
 class Simulation:
     def __init__(self, cfg: SimConfig, atmosphere: Atmosphere | None = None):
         self.cfg = cfg
-        self.atmosphere = atmosphere if atmosphere is not None else make_atmosphere(cfg.atmosphere)
+        # 大气湍流种子由全局种子派生(+1 偏移,与传感器流区分)
+        self.atmosphere = atmosphere if atmosphere is not None else make_atmosphere(
+            cfg.atmosphere, seed=cfg.seed + 1)
         self.dynamics = AirshipDynamics(cfg, self.atmosphere)
         rng_root = np.random.default_rng(cfg.seed)
         self.sensors = SensorSuite(cfg.sensor, rng_root)
@@ -66,6 +68,8 @@ class Simulation:
         self.cmd = MotorCommands()
         self.controller.reset()
         self.history = History()
+        self.atmosphere.reset()
+        self._init_helium(p_ned_m)
         # 初始测量 = 初始真值(控制器第一拍前已有有效测量)
         self.sensors.sample_imu(self.x, 0.0)
         self.sensors.sample_baro(self.x, 0.0)
@@ -76,6 +80,40 @@ class Simulation:
     def t_s(self) -> float:
         return self.tick * self.cfg.dt_physics_s
 
+    # ---- 氦气热力学(见 HeliumThermalConfig 注释) ----
+    def _init_helium(self, p_ned_m) -> None:
+        hcfg = self.cfg.helium
+        self.helium_T_K: float | None = None
+        self.helium_m_kg = self.cfg.mass.rho_helium_kg_m3 * self.cfg.hull.volume_m3
+        if not hcfg.enabled:
+            return
+        atm = self.atmosphere.get_state(np.array(p_ned_m, dtype=float), 0.0)
+        self.helium_T_K = atm.temperature_K
+        # 等效气体常数:与配置密度在初始环境下自洽([假设] 见 HeliumThermalConfig)
+        self._R_eff_J_kgK = atm.pressure_Pa / (
+            self.cfg.mass.rho_helium_kg_m3 * atm.temperature_K)
+        hull = self.cfg.hull
+        a, b = hull.a_m, hull.b_m
+        e = np.sqrt(1.0 - (b / a) ** 2)
+        # 长椭球表面积(解析):A = 2πb²(1 + a/(b·e)·arcsin(e)) ≈ 4.19 m²
+        self._A_surf_m2 = 2.0 * np.pi * b**2 * (1.0 + a / (b * e) * np.arcsin(e))
+        self._A_proj_m2 = hull.side_area_m2   # 太阳辐照投影面积(侧照,保守取大面)
+
+    def _step_helium(self, t: float) -> None:
+        hcfg = self.cfg.helium
+        if not hcfg.enabled or self.helium_T_K is None:
+            return
+        atm = self.atmosphere.get_state(self.x[IDX_POS], t)
+        q_solar_W = (hcfg.absorptivity * hcfg.solar_flux_W_m2 * self._A_proj_m2
+                     if hcfg.solar_on else 0.0)
+        q_conv_W = hcfg.h_film_W_m2K * self._A_surf_m2 * (self.helium_T_K - atm.temperature_K)
+        dT_dt = (q_solar_W - q_conv_W) / (self.helium_m_kg * hcfg.cp_J_kgK)
+        self.helium_T_K += dT_dt * self._dt_ctrl_s
+        # 定容排气:囊内压力 = 环境压力,质量随温度/高度变化
+        self.helium_m_kg = atm.pressure_Pa / (self._R_eff_J_kgK * self.helium_T_K) \
+            * self.cfg.hull.volume_m3
+        self.dynamics.set_helium_mass(self.helium_m_kg)
+
     def step(self, record: bool = True) -> None:
         """推进一个物理 tick(1ms)。传感器/控制按整数倍 tick 触发。"""
         t = self.t_s
@@ -84,6 +122,7 @@ class Simulation:
         if self.tick % self._ticks_per_baro == 0:
             self.sensors.sample_baro(self.x, t)
         if self.tick % self._ticks_per_ctrl == 0:
+            self._step_helium(t)
             self.cmd = self.controller.update(
                 self.sensors.meas, self.x[IDX_POS], self._dt_ctrl_s)
             if record:

@@ -44,7 +44,20 @@ Three.js:右手系 Y 向上。取 x_three=东, y_three=上(=-D), z_three=南(=-N
  "pos_hold":bool,"target_n_m":..,"target_e_m":..}      # 字段均可选
 {"type":"manual","enable":true}          # 手动/自动模式切换
 {"type":"manual_cmd","left_N":..,"right_N":..,"vertical_N":..}
-{"type":"set_wind","wind_ned_m_s":[n,e,d]}             # 常值风(阶段5扩展为大气面板)
+{"type":"set_wind","wind_ned_m_s":[n,e,d]}             # 常值风(constant 模型)
+
+== 大气面板指令(isa 模型)==
+{"type":"set_atmosphere","dT_K":..,"turbulence_intensity":..}      # 字段可选
+{"type":"set_wind_layer","index":0,"speed_m_s":..,"dir_deg":..}    # 改某一风层
+{"type":"set_wind_preset","preset":"calm|low|high"}                # 预置风场
+{"type":"gust","dir_deg":90,"amplitude_m_s":1.0,"duration_s":3.0}  # 触发一次阵风
+{"type":"set_solar","on":true,"flux_W_m2":1000}                    # 太阳辐照(氦气热力学)
+{"type":"get_profile"}    # 请求垂直剖面,回复:
+  {"type":"profile","alt_m":[...],"wind_speed_m_s":[...],
+   "wind_dir_deg":[...],"rho_kg_m3":[...]}
+状态广播在 isa 模型下附加字段 "atmosphere":
+  {"model","dT_K","turbulence_intensity","wind_layers":[[alt,spd,dir],..],
+   "helium":{"enabled","solar_on","T_K","superheat_K","m_kg"}}
 """
 from __future__ import annotations
 
@@ -60,6 +73,8 @@ import time
 import numpy as np
 import websockets
 
+from .atmosphere import (IsaAtmosphere, wind_layers_high_altitude,
+                         wind_layers_low_altitude)
 from .config import PidGains, SimConfig
 from .dynamics import IDX_OMEGA, IDX_POS, IDX_QUAT, IDX_THRUST, IDX_VEL
 from .math3d import quat_to_euler
@@ -139,7 +154,47 @@ class RealtimeServer:
                       [("alt", ctl.pid_alt), ("yaw", ctl.pid_yaw),
                        ("speed", ctl.pid_speed)]},
         }
+        atm_obj = sim.atmosphere
+        if isinstance(atm_obj, IsaAtmosphere):
+            hcfg = sim.cfg.helium
+            t_amb = atm.temperature_K
+            msg["atmosphere"] = {
+                "model": "isa",
+                "dT_K": atm_obj.dT_K,
+                "turbulence_intensity": atm_obj.turbulence_intensity,
+                "wind_layers": [list(map(float, l)) for l in atm_obj.wind_layers],
+                "alt_m": float(atm_obj.ground_alt_m - x[IDX_POS][2]),
+                "helium": {
+                    "enabled": hcfg.enabled,
+                    "solar_on": hcfg.solar_on,
+                    "T_K": float(sim.helium_T_K) if sim.helium_T_K is not None else None,
+                    "superheat_K": (float(sim.helium_T_K - t_amb)
+                                    if sim.helium_T_K is not None else 0.0),
+                    "m_kg": float(sim.helium_m_kg),
+                },
+            }
         return json.dumps(msg)
+
+    def profile_json(self) -> str:
+        """垂直剖面(大气面板可视化):高度-风速/风向/密度。"""
+        atm = self.sim.atmosphere
+        if isinstance(atm, IsaAtmosphere):
+            top = max((l[0] for l in atm.wind_layers), default=100.0)
+            top = max(top, 50.0)
+            alts = np.linspace(0.0, top, 41)
+            wind = [atm.wind_mean_ned(a) for a in alts]
+            spd = [float(np.hypot(w[0], w[1])) for w in wind]
+            ddeg = [float(np.rad2deg(np.arctan2(w[1], w[0]))) for w in wind]
+            from .atmosphere import isa_state
+            rho = [isa_state(a, atm.dT_K)[2] for a in alts]   # 纯函数,无湍流副作用
+        else:
+            alts, spd, ddeg = [0.0, 100.0], [0.0, 0.0], [0.0, 0.0]
+            rho = [self.sim.cfg.atmosphere.rho_const_kg_m3] * 2
+        return json.dumps({"type": "profile",
+                           "alt_m": [float(a) for a in alts],
+                           "wind_speed_m_s": spd,
+                           "wind_dir_deg": ddeg,
+                           "rho_kg_m3": [float(r) for r in rho]})
 
     # ---- 指令处理 ----
     def handle_command(self, msg: dict) -> None:
@@ -190,6 +245,48 @@ class RealtimeServer:
             mc.vertical_N = float(msg.get("vertical_N", mc.vertical_N))
         elif t == "set_wind":
             sim.atmosphere.set_uniform_wind(msg["wind_ned_m_s"])
+        elif t == "set_atmosphere":
+            atm = self._require_isa()
+            if "dT_K" in msg:
+                atm.dT_K = float(msg["dT_K"])
+            if "turbulence_intensity" in msg:
+                atm.turbulence_intensity = float(np.clip(
+                    float(msg["turbulence_intensity"]), 0.0, 3.0))
+        elif t == "set_wind_layer":
+            atm = self._require_isa()
+            layer = atm.wind_layers[int(msg["index"])]
+            if "speed_m_s" in msg:
+                layer[1] = max(0.0, float(msg["speed_m_s"]))
+            if "dir_deg" in msg:
+                layer[2] = float(msg["dir_deg"])
+        elif t == "set_wind_preset":
+            atm = self._require_isa()
+            preset = msg["preset"]
+            if preset == "calm":
+                atm.wind_layers = []
+            elif preset == "low":
+                atm.wind_layers = [list(l) for l in wind_layers_low_altitude()]
+            elif preset == "high":
+                atm.wind_layers = [list(l) for l in wind_layers_high_altitude()]
+            else:
+                raise ValueError(f"unknown preset: {preset}")
+        elif t == "gust":
+            self._require_isa().trigger_gust(
+                t_s=sim.t_s,
+                dir_to_deg=float(msg.get("dir_deg", 0.0)),
+                amplitude_m_s=float(msg.get("amplitude_m_s", 1.0)),
+                duration_s=float(msg.get("duration_s", 3.0)))
+        elif t == "set_solar":
+            if "on" in msg:
+                sim.cfg.helium.solar_on = bool(msg["on"])
+            if "flux_W_m2" in msg:
+                sim.cfg.helium.solar_flux_W_m2 = float(msg["flux_W_m2"])
+
+    def _require_isa(self) -> IsaAtmosphere:
+        if not isinstance(self.sim.atmosphere, IsaAtmosphere):
+            raise ValueError("atmosphere model is 'constant'; "
+                             "start with --atmo low/high to use the ISA panel")
+        return self.sim.atmosphere
 
     # ---- 网络 ----
     async def _ws_handler(self, ws):
@@ -197,7 +294,11 @@ class RealtimeServer:
         try:
             async for raw in ws:
                 try:
-                    self.handle_command(json.loads(raw))
+                    msg = json.loads(raw)
+                    if msg.get("type") == "get_profile":   # 请求/答复类指令
+                        await ws.send(self.profile_json())
+                    else:
+                        self.handle_command(msg)
                 except Exception as e:  # 单条坏指令不拖垮服务
                     await ws.send(json.dumps({"type": "error", "message": str(e)}))
         finally:
@@ -222,9 +323,14 @@ class RealtimeServer:
         next_wall = time.perf_counter()
         while True:
             if self.running:
-                with self._lock:
-                    for _ in range(self.sim._ticks_per_ctrl):
+                # 分块步进并周期性让出事件循环:物理接近占满 CPU 时
+                # 仍能处理握手/指令(实时性尽力而为,见 README)
+                ticks = self.sim._ticks_per_ctrl
+                for i in range(ticks):
+                    with self._lock:
                         self.sim.step(record=False)
+                    if i % 5 == 4:
+                        await asyncio.sleep(0)
             await self._broadcast(self.state_json())
             next_wall += frame_sim_s / self.time_scale
             delay = next_wall - time.perf_counter()
