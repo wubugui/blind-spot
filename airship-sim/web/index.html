@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>飞艇仿真 — 观测窗口</title>
+<style>
+  body { margin: 0; background: #14171c; color: #cdd3dd; font-family: ui-monospace, Menlo, Consolas, monospace; overflow: hidden; }
+  #hud { position: absolute; top: 10px; left: 10px; background: rgba(10,12,16,.72); padding: 10px 14px; border-radius: 6px; font-size: 12px; line-height: 1.7; pointer-events: none; white-space: pre; }
+  #conn { position: absolute; top: 10px; right: 10px; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
+  .ok  { background: #1d4d2b; } .bad { background: #5a2424; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="hud">connecting…</div>
+<div id="conn" class="bad">offline</div>
+
+<!--
+  渲染层约束(工程仿真规格):
+  - 不包含任何物理逻辑;
+  - 不为动画平滑插值/滤波物理状态,姿态与位置一律直接显示最近一次广播的原始值;
+  - 坐标转换已在服务端协议层完成(pos_three / quat_three_xyzw),此处直接使用。
+-->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- 场景 ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 200);
+camera.position.set(4, 3, 5);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.5, 0);
+
+scene.add(new THREE.HemisphereLight(0xbcc7d8, 0x20242c, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(5, 10, 3);
+scene.add(sun);
+
+const grid = new THREE.GridHelper(40, 40, 0x3a4250, 0x262c36);
+scene.add(grid);
+scene.add(new THREE.AxesHelper(1.0)); // Three 世界系: x=东(红) y=上(绿) z=南(蓝)
+
+// ---------- 飞艇模型(几何尺寸与 config 一致:长2m,直径0.8m) ----------
+// 体轴(x前/y右/z下)经服务端基变换后,模型局部坐标系为:
+//   局部 x = 体轴 y(右), 局部 y = -体轴 z(上), 局部 z = -体轴 x(后)
+// 因此:艇身长轴沿局部 -z(机头朝 -z),吊舱在局部 -y,尾翼在局部 +z。
+const ship = new THREE.Group();
+const hull = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 32, 24),
+  new THREE.MeshStandardMaterial({ color: 0xb9c4d6, roughness: .55, metalness: .05 }));
+hull.scale.set(0.4, 0.4, 1.0);
+ship.add(hull);
+
+const nose = new THREE.Mesh(
+  new THREE.ConeGeometry(0.06, 0.16, 12),
+  new THREE.MeshStandardMaterial({ color: 0xd96a3b }));
+nose.rotation.x = -Math.PI / 2;          // 锥尖指向 -z(机头)
+nose.position.set(0, 0, -1.05);
+ship.add(nose);
+
+const gondola = new THREE.Mesh(
+  new THREE.BoxGeometry(0.18, 0.12, 0.3),
+  new THREE.MeshStandardMaterial({ color: 0x46505e, roughness: .8 }));
+gondola.position.set(0, -0.49, 0);       // 浮心下 ~0.55m 处(贴囊体下沿)
+ship.add(gondola);
+
+const finMat = new THREE.MeshStandardMaterial({ color: 0x8b96a8, side: THREE.DoubleSide });
+const finGeo = new THREE.PlaneGeometry(0.30, 0.26);
+const finV1 = new THREE.Mesh(finGeo, finMat);   // 垂直尾翼(局部 yz 平面)
+finV1.rotation.y = Math.PI / 2;
+finV1.position.set(0, 0.22, 0.85);
+const finV2 = finV1.clone(); finV2.position.y = -0.22;
+const finH1 = new THREE.Mesh(finGeo, finMat);   // 水平尾翼(局部 xz 平面)
+finH1.rotation.x = Math.PI / 2;
+finH1.position.set(0.22, 0, 0.85);
+const finH2 = finH1.clone(); finH2.position.x = -0.22;
+ship.add(finV1, finV2, finH1, finH2);
+scene.add(ship);
+
+// ---------- 箭头:风矢量(青)、电机推力(橙) ----------
+const windArrow = new THREE.ArrowHelper(
+  new THREE.Vector3(1,0,0), new THREE.Vector3(), 1, 0x2fb3c7, 0.25, 0.12);
+scene.add(windArrow);
+
+// 推力箭头挂在船体局部坐标:左右电机沿 -z(前),垂直电机沿 +y(上)
+function thrustArrow(px, py, pz, dir) {
+  const a = new THREE.ArrowHelper(dir, new THREE.Vector3(px, py, pz), 0.001, 0xe8923a, 0.08, 0.05);
+  ship.add(a);
+  return a;
+}
+const FWD = new THREE.Vector3(0, 0, -1), UP = new THREE.Vector3(0, 1, 0);
+const arrowL = thrustArrow(-0.10, -0.55, 0, FWD);
+const arrowR = thrustArrow( 0.10, -0.55, 0, FWD);
+const arrowV = thrustArrow( 0,    -0.62, 0, UP);
+const THRUST_SCALE = 20;   // 1N → 20m,0.05N 上限 → 1m 箭头
+
+function setThrust(arrow, baseDir, value_N) {
+  const len = Math.abs(value_N) * THRUST_SCALE;
+  arrow.setDirection(value_N >= 0 ? baseDir : baseDir.clone().negate());
+  arrow.setLength(Math.max(len, 1e-4), 0.08, 0.05);
+  arrow.visible = len > 1e-3;
+}
+
+// ---------- 轨迹拖尾 ----------
+const TRAIL_MAX = 3000;   // 50Hz × 60s
+const trailPos = new Float32Array(TRAIL_MAX * 3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setDrawRange(0, 0);
+const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x5d86c5 }));
+trail.frustumCulled = false;
+scene.add(trail);
+let trailLen = 0;
+
+function pushTrail(p) {
+  if (trailLen < TRAIL_MAX) {
+    trailPos.set(p, trailLen * 3);
+    trailLen++;
+  } else {
+    trailPos.copyWithin(0, 3);
+    trailPos.set(p, (TRAIL_MAX - 1) * 3);
+  }
+  trailGeo.setDrawRange(0, trailLen);
+  trailGeo.attributes.position.needsUpdate = true;
+}
+
+// ---------- WebSocket(断线自动重连,仿真端不依赖前端) ----------
+const hud = document.getElementById('hud');
+const conn = document.getElementById('conn');
+let lastState = null;
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.hostname}:8765/`);
+  ws.onopen = () => { conn.textContent = 'online'; conn.className = 'ok'; };
+  ws.onclose = () => {
+    conn.textContent = 'offline – retrying'; conn.className = 'bad';
+    setTimeout(connect, 1000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'state') onState(m);
+  };
+  window._ws = ws;   // 阶段4控制面板使用
+}
+connect();
+
+function onState(m) {
+  lastState = m;
+  // 原始状态直接上屏,无插值(规格要求)
+  ship.position.fromArray(m.pos_three);
+  const q = m.quat_three_xyzw;
+  ship.quaternion.set(q[0], q[1], q[2], q[3]);
+  pushTrail(m.pos_three);
+
+  setThrust(arrowL, FWD, m.thrust_N[0]);
+  setThrust(arrowR, FWD, m.thrust_N[1]);
+  setThrust(arrowV, UP,  m.thrust_N[2]);
+
+  const wv = new THREE.Vector3().fromArray(m.wind_three);
+  const wlen = wv.length();
+  windArrow.position.set(m.pos_three[0], m.pos_three[1] + 1.2, m.pos_three[2]);
+  if (wlen > 1e-3) {
+    windArrow.visible = true;
+    windArrow.setDirection(wv.normalize());
+    windArrow.setLength(wlen, 0.25, 0.12);   // 1 m/s → 1m 箭头
+  } else windArrow.visible = false;
+
+  hud.textContent =
+    `t      ${m.t_s.toFixed(2)} s${m.running ? '' : '  [paused]'}  ×${m.time_scale}\n` +
+    `alt    ${(-m.pos_ned_m[2]).toFixed(2)} m  (sp ${m.pid.alt.sp.toFixed(2)})\n` +
+    `yaw    ${m.euler_deg[2].toFixed(1)} °  (sp ${m.pid.yaw.sp.toFixed(1)})\n` +
+    `pitch  ${m.euler_deg[1].toFixed(1)} °   roll ${m.euler_deg[0].toFixed(1)} °\n` +
+    `u      ${m.v_body_m_s[0].toFixed(2)} m/s (sp ${m.pid.speed.sp.toFixed(2)})\n` +
+    `thrust L ${m.thrust_N[0].toFixed(3)}  R ${m.thrust_N[1].toFixed(3)}  V ${m.thrust_N[2].toFixed(3)} N\n` +
+    `wind   ${Math.hypot(...m.wind_ned_m_s).toFixed(2)} m/s   ρ ${m.rho_kg_m3.toFixed(3)}\n` +
+    `mode   ${m.manual ? 'MANUAL' : 'AUTO'}`;
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
