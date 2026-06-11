@@ -16,6 +16,7 @@ def make_frictionless_dyn(wind=(0.0, 0.0, 0.0)):
     cfg.aero.c_ang_lin_roll_Nms = 0.0
     cfg.aero.c_ang_lin_pitch_Nms = 0.0
     cfg.aero.c_ang_lin_yaw_Nms = 0.0
+    cfg.fins.enabled = False   # 尾翼是耗散/恢复项,守恒性测试中关闭
     cfg.atmosphere.wind_ned_m_s = wind
     return AirshipDynamics(cfg, make_atmosphere(cfg.atmosphere))
 
@@ -100,3 +101,37 @@ def test_munk_moment_destabilizing():
     expect = (k2 - k1) * rho * cfg.hull.volume_m3 * u * w
     assert munk_pitch_Nm > 0.0
     assert np.isclose(munk_pitch_Nm, expect, rtol=1e-9)
+
+
+def test_fin_restoring_opposes_munk():
+    """尾翼恢复力矩方向与 Munk 失稳力矩相反,且量值为部分抵消(真实飞艇的边际静稳定)。"""
+    from airship_sim.aero import AeroModel
+    from airship_sim.added_mass import lamb_k_factors
+    cfg = default_config()
+    rho, u, v = 1.225, 0.5, 0.1   # 正侧滑
+    aero_fin = AeroModel(cfg.hull, cfg.aero, cfg.fins)
+    cfg2 = default_config()
+    cfg2.fins.enabled = False
+    aero_bare = AeroModel(cfg2.hull, cfg2.aero, cfg2.fins)
+    nu_r = np.array([u, v, 0.0, 0.0, 0.0, 0.0])
+    _, m_fin = aero_fin.forces_moments(nu_r, rho)
+    _, m_bare = aero_bare.forces_moments(nu_r, rho)
+    fin_yaw_Nm = m_fin[2] - m_bare[2]
+    k1, k2, _ = lamb_k_factors(cfg.hull.a_m, cfg.hull.b_m)
+    munk_yaw_Nm = -(k2 - k1) * rho * cfg.hull.volume_m3 * u * v   # 偏航面 Munk(指向增大侧滑)
+    assert fin_yaw_Nm * munk_yaw_Nm < 0           # 方向相反
+    ratio = abs(fin_yaw_Nm / munk_yaw_Nm)
+    assert 0.2 < ratio < 1.0                       # 部分抵消(完全抵消需不现实的尾翼面积)
+
+
+def test_fin_adds_yaw_damping():
+    # 有前向速度时,偏航角速度应受尾翼阻尼(局部来流角含 r·x_f 项)
+    from airship_sim.aero import AeroModel
+    cfg = default_config()
+    aero = AeroModel(cfg.hull, cfg.aero, cfg.fins)
+    nu_r = np.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.3])   # 前飞 + 正偏航角速度
+    _, m = aero.forces_moments(nu_r, rho_kg_m3=1.225)
+    cfg.fins.enabled = False
+    aero_bare = AeroModel(cfg.hull, cfg.aero, cfg.fins)
+    _, m_bare = aero_bare.forces_moments(nu_r, rho_kg_m3=1.225)
+    assert m[2] < m_bare[2] < 0.0   # 尾翼显著增强偏航阻尼

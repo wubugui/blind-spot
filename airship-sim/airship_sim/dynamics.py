@@ -120,7 +120,7 @@ class AirshipDynamics:
     def __init__(self, cfg: SimConfig, atmosphere: Atmosphere):
         self.cfg = cfg
         self.props = build_mass_properties(cfg)
-        self.aero = AeroModel(cfg.hull, cfg.aero)
+        self.aero = AeroModel(cfg.hull, cfg.aero, cfg.fins)
         self.atmosphere = atmosphere
         act = cfg.actuator
         # 电机位置(体轴系,相对浮心):左、右、垂直

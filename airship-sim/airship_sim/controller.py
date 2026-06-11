@@ -63,9 +63,11 @@ class Pid:
 
         out_unsat = ff + g.kp * err + self._integral - g.kd * self._d_filt
         out = float(np.clip(out_unsat, g.out_min, g.out_max))
-        # 条件积分抗饱和
+        # 条件积分抗饱和 + 积分分离(见 PidGains.i_band 注释)
         saturated = out != out_unsat
-        if not (saturated and (out_unsat - out) * err > 0):
+        windup_block = saturated and (out_unsat - out) * err > 0
+        outside_band = g.i_band > 0 and abs(err) > g.i_band
+        if not (windup_block or outside_band):
             self._integral += g.ki * err * dt_s
             self._integral = float(np.clip(self._integral, g.out_min, g.out_max))
         return out
@@ -123,11 +125,13 @@ class CascadeController:
         self.debug = ChannelDebug()
         self.manual_mode = False
         self.manual_cmd = MotorCommands()
+        self._pos_hold_yaw_sp: float | None = None
 
     def reset(self) -> None:
         self.pid_alt.reset()
         self.pid_yaw.reset()
         self.pid_speed.reset()
+        self._pos_hold_yaw_sp = None
 
     def set_gains(self, channel: str, gains: PidGains) -> None:
         """实时改增益(调参面板):保留积分状态,只换系数。"""
@@ -147,13 +151,30 @@ class CascadeController:
             dn = sp.target_n_m - pos_ned_m[0]
             de = sp.target_e_m - pos_ned_m[1]
             dist = float(np.hypot(dn, de))
+            # 航向设定:仅当位置误差超出死区时刷新指向目标的方位角;死区内保持
+            # 上一次设定不变。若每拍跟随方位角,在目标附近方位角随微小位移翻转,
+            # 航向来回急甩并积累侧向速度(常值风下实测发散)。
+            if self._pos_hold_yaw_sp is None:
+                self._pos_hold_yaw_sp = meas.yaw_rad
             if dist > self.cfg.pos_hold_deadband_m:
-                yaw_sp = float(np.arctan2(de, dn))   # 指向目标
-                speed_sp = float(np.clip(self.cfg.pos_hold_kp_1_s * dist,
-                                         0.0, self.cfg.pos_hold_max_speed_m_s))
-            else:
-                speed_sp = 0.0
-                yaw_sp = meas.yaw_rad  # 死区内保持当前航向
+                bearing = float(np.arctan2(de, dn))
+                # 速率限制地转向目标方位(见 pos_hold_yaw_rate_max_rad_s 注释)
+                d_yaw = wrap_angle_rad(bearing - self._pos_hold_yaw_sp)
+                max_step = self.cfg.pos_hold_yaw_rate_max_rad_s * dt_s
+                self._pos_hold_yaw_sp = wrap_angle_rad(
+                    self._pos_hold_yaw_sp + float(np.clip(d_yaw, -max_step, max_step)))
+            yaw_sp = self._pos_hold_yaw_sp
+            # 前速设定 = 期望地速矢量(P 外环,限幅)在当前航向上的投影。
+            # 可为负(电机反转倒车):目标在身后小距离时不调头,顶风保持时尤为重要。
+            v_max = self.cfg.pos_hold_max_speed_m_s
+            v_des_n = self.cfg.pos_hold_kp_1_s * dn
+            v_des_e = self.cfg.pos_hold_kp_1_s * de
+            v_norm = float(np.hypot(v_des_n, v_des_e))
+            if v_norm > v_max:
+                v_des_n *= v_max / v_norm
+                v_des_e *= v_max / v_norm
+            speed_sp = float(v_des_n * np.cos(meas.yaw_rad)
+                             + v_des_e * np.sin(meas.yaw_rad))
 
         # 高度(PID + 悬停油门前馈,前馈在 PID 内部参与饱和与抗积分判断)
         f_vert = self.pid_alt.update(sp.altitude_m, meas.altitude_m, dt_s,

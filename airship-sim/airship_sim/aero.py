@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from .config import AeroConfig, HullConfig
+from .config import AeroConfig, FinConfig, HullConfig
 
 
 class AeroModel:
-    def __init__(self, hull: HullConfig, cfg: AeroConfig):
+    def __init__(self, hull: HullConfig, cfg: AeroConfig, fins: FinConfig | None = None):
         self._cd_axial = cfg.cd_axial
         self._cd_lateral = cfg.cd_lateral
         self._a_cross_m2 = hull.cross_area_m2
@@ -36,6 +36,7 @@ class AeroModel:
         self._c_ang_quad_m5 = (4.0 / 15.0) * cfg.cd_lateral * hull.b_m * hull.a_m**4
         self._c_lin_Nms = np.array([
             cfg.c_ang_lin_roll_Nms, cfg.c_ang_lin_pitch_Nms, cfg.c_ang_lin_yaw_Nms])
+        self._fins = fins if (fins is not None and fins.enabled) else None
 
     def forces_moments(self, nu_r: np.ndarray, rho_kg_m3: float) -> tuple[np.ndarray, np.ndarray]:
         """输入气流相对速度 ν_r = [u,v,w,p,q,r](体轴),返回 (F_body_N, M_body_Nm)。"""
@@ -52,4 +53,21 @@ class AeroModel:
         m = -rho_kg_m3 * self._c_ang_quad_m5 * np.abs(omega) * omega
         m[0] = 0.0  # 横流条带阻尼对滚转无贡献(旋成体),滚转只有下面的线性项
         m -= self._c_lin_Nms * omega
+
+        # 尾翼(见 FinConfig):线性升力线,局部来流角含转动分量(自然提供俯仰/偏航阻尼)
+        if self._fins is not None:
+            fc = self._fins
+            x_f = fc.x_fin_m
+            q_rate, r_rate = omega[1], omega[2]
+            # 尾翼处局部横向气流速度:v_loc = v + r·x_f(偏航面), w_loc = w - q·x_f(俯仰面)
+            v_loc = v + r_rate * x_f
+            w_loc = w - q_rate * x_f
+            c_fin = 0.5 * rho_kg_m3 * fc.cl_alpha_per_rad * fc.s_plane_m2 * abs(u)
+            f_y_fin = -c_fin * v_loc   # 垂直尾翼对侧滑的恢复侧力
+            f_z_fin = -c_fin * w_loc   # 水平尾翼对攻角的恢复法向力
+            f[1] += f_y_fin
+            f[2] += f_z_fin
+            # 力矩 r×F,r = (x_f, 0, 0)
+            m[1] += -x_f * f_z_fin
+            m[2] += x_f * f_y_fin
         return f, m

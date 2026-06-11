@@ -76,6 +76,25 @@ class AeroConfig:
 
 
 @dataclass
+class FinConfig:
+    """十字尾翼(2 片水平 + 2 片垂直)。
+
+    设计依据:无尾翼椭球受 Munk 力矩方向不稳定(仿真验证:0.5m/s 风下航向 10s 内
+    发散到横对风,差速力矩 ±0.01N·m 比 Munk 力矩斜率小一个量级),真实飞艇必须装尾翼。
+    完全抵消 Munk 需 S·CLα·|x_fin| > 2(k2-k1)V ≈ 0.81 m³,典型尾翼只能做到部分静稳定,
+    剩余由航向阻尼 + 主动控制兜底(与真实飞艇一致)。
+
+    [假设] 线性升力线模型 F = ½ρ·CLα·S·|u|·v_local,无失速、无翼间干扰
+    / 小侧滑角(<20°)下良好 / 大侧滑/横对风时高估恢复力矩——但此时船体侧阻力主导。
+    [假设] 忽略尾翼自身的附加质量与轴向阻力 / 两者 ≪ 囊体对应项 / 精细配平时计入。
+    """
+    enabled: bool = True
+    s_plane_m2: float = 0.15      # 单平面(一对尾翼)投影总面积;约为侧投影面积的 12%
+    cl_alpha_per_rad: float = 2.6  # 低展弦比升力线斜率 2π·AR/(AR+2),AR≈1.5
+    x_fin_m: float = -0.85         # 尾翼气动中心纵向位置(艉部,浮心后 0.85m)
+
+
+@dataclass
 class ActuatorConfig:
     """执行器:左右差速电机(体轴 +x 推力)+ 垂直电机(体轴 -z 推力为正=向上)。"""
     thrust_max_N: float = 0.05       # 单个电机推力上限
@@ -110,6 +129,8 @@ class PidGains:
     tau_meas_s: float = 0.0    # 测量值一阶低通(0=不滤波)。用于低采样率/高噪声测量
     #   (如 10Hz 保持采样的气压计):避免保持跳变被微分放大、噪声经 Kp 在
     #   推力上限处单边削顶(整流)压低平均推力。控制器侧滤波,不触碰物理状态。
+    i_band: float = 0.0        # 积分分离阈值:|误差| > i_band 时冻结积分(0=不启用)。
+    #   解决大阶跃期间(尤其反向饱和刹车段,条件抗饱和不拦截)积分累积导致的超调
     out_min: float = -1.0
     out_max: float = 1.0
 
@@ -129,7 +150,7 @@ class ControlConfig:
     #   Kp = m·ωn² ≈ 0.10 N/m, Kd = 2ζωn·m ≈ 0.75(气压计 10Hz/σ0.05m,微分须重滤波,
     #   实取 0.4 + τ_d=1.5s 折衷);积分项只负担前馈标定残差
     alt: PidGains = field(default_factory=lambda: PidGains(
-        kp=0.10, ki=0.01, kd=0.4, tau_d_s=1.5, tau_meas_s=0.6,
+        kp=0.10, ki=0.01, kd=0.4, tau_d_s=1.5, tau_meas_s=0.6, i_band=0.4,
         out_min=-0.05, out_max=0.05))
     # 悬停油门前馈 [N]:抵消配重的稳态推力,默认由 default_config() 置为 heaviness·g。
     # [假设] 悬停油门已在实机试飞中标定(标准做法),仿真中直接取配平值
@@ -137,15 +158,20 @@ class ControlConfig:
     alt_ff_N: float = 0.0
     # 偏航通道:偏航等效惯量 I+I_a ≈ 0.14 kg·m²;ωn≈0.35 rad/s, ζ≈0.9
     #   Kp = I·ωn² ≈ 0.017 N·m/rad, Kd = 2ζωn·I ≈ 0.087;最大差速力矩 ±0.01 N·m
+    #   90° 阶跃验证后微调:Kd→0.11 压超调(实测16%→目标<10%),Ki→0.002 加快残差收敛
     yaw: PidGains = field(default_factory=lambda: PidGains(
-        kp=0.017, ki=0.001, kd=0.087, tau_d_s=0.3, out_min=-0.01, out_max=0.01))
+        kp=0.017, ki=0.002, kd=0.11, tau_d_s=0.3, i_band=0.35,
+        out_min=-0.01, out_max=0.01))
     # 前速通道:轴向等效质量 m+k1ρV ≈ 0.95 kg;一阶目标带宽 ω≈0.3 rad/s → Kp = m·ω ≈ 0.29
     speed: PidGains = field(default_factory=lambda: PidGains(
         kp=0.29, ki=0.03, kd=0.0, out_min=-0.1, out_max=0.1))
-    # 位置保持外环(P):距离 → 前速设定,饱和于 max_speed
+    # 位置保持外环(P):期望地速矢量 → 航向设定 + 前速设定(航向投影,可为负)
     pos_hold_kp_1_s: float = 0.15
     pos_hold_max_speed_m_s: float = 0.5
-    pos_hold_deadband_m: float = 0.15   # 距目标小于该值时不再调头追位置,避免原地振荡
+    pos_hold_deadband_m: float = 0.5    # 死区:侧向(欠驱动方向)漂移小于该值时不调头修正。
+    #   死区过小(实测 0.15m)会在常值风下触发周期性大角度调头→横对风→被吹离
+    pos_hold_yaw_rate_max_rad_s: float = 0.2   # 航向设定速率限制(≈11°/s):
+    #   方位角跳变(死区边界、近距离掠过目标)不直接进入偏航环,缓慢蟹行修正侧向误差
 
 
 @dataclass
@@ -166,6 +192,7 @@ class SimConfig:
     hull: HullConfig = field(default_factory=HullConfig)
     mass: MassConfig = field(default_factory=MassConfig)
     aero: AeroConfig = field(default_factory=AeroConfig)
+    fins: FinConfig = field(default_factory=FinConfig)
     actuator: ActuatorConfig = field(default_factory=ActuatorConfig)
     sensor: SensorConfig = field(default_factory=SensorConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
