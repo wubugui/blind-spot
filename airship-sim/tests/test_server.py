@@ -118,11 +118,23 @@ async def _integration():
             await asyncio.sleep(0.1)
             e = await _drain_then_recv(ws)
             assert e["manual"] is True
-            # 6) 恢复运行
+            # 6) 恢复运行;手动指令应真正作用到电机指令
             await ws.send(json.dumps({"type": "resume"}))
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.25)
             f = await _drain_then_recv(ws)
             assert f["running"] is True and f["t_s"] > c["t_s"]
+            assert np.isclose(f["cmd_N"][0], 0.03)
+
+            # 7) 退出手动,下发高度设定值,应反映在 PID 通道设定中
+            await ws.send(json.dumps({"type": "manual", "enable": False}))
+            await ws.send(json.dumps({"type": "set_setpoints",
+                                      "altitude_m": 2.5, "pos_hold": False,
+                                      "yaw_deg": 45.0}))
+            await asyncio.sleep(0.25)
+            g = await _drain_then_recv(ws)
+            assert g["manual"] is False
+            assert np.isclose(g["pid"]["alt"]["sp"], 2.5)
+            assert np.isclose(g["pid"]["yaw"]["sp"], 45.0, atol=1e-6)
     finally:
         task.cancel()
         try:

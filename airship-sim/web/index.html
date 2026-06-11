@@ -4,22 +4,68 @@
 <meta charset="utf-8">
 <title>飞艇仿真 — 观测窗口</title>
 <style>
-  body { margin: 0; background: #14171c; color: #cdd3dd; font-family: ui-monospace, Menlo, Consolas, monospace; overflow: hidden; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #14171c; color: #cdd3dd; font-family: ui-monospace, Menlo, Consolas, monospace; overflow: hidden; display: flex; }
+  #view { flex: 1; position: relative; }
   #hud { position: absolute; top: 10px; left: 10px; background: rgba(10,12,16,.72); padding: 10px 14px; border-radius: 6px; font-size: 12px; line-height: 1.7; pointer-events: none; white-space: pre; }
   #conn { position: absolute; top: 10px; right: 10px; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
   .ok  { background: #1d4d2b; } .bad { background: #5a2424; }
-  canvas { display: block; }
+  #panel { width: 380px; height: 100vh; overflow-y: auto; background: #1a1e25; border-left: 1px solid #2a313c; padding: 10px; font-size: 12px; }
+  #panel h3 { margin: 12px 0 6px; font-size: 12px; color: #8fa1bb; border-bottom: 1px solid #2a313c; padding-bottom: 4px; }
+  button { background: #2c3440; color: #cdd3dd; border: 1px solid #3a4250; border-radius: 4px; padding: 4px 10px; margin: 2px; cursor: pointer; font-family: inherit; font-size: 12px; }
+  button:hover { background: #39434f; }
+  button.active { background: #2b5a8c; border-color: #3d77b5; }
+  canvas.chart { width: 100%; height: 110px; background: #11141a; border: 1px solid #2a313c; border-radius: 4px; display: block; margin-bottom: 6px; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .row label { width: 60px; color: #8fa1bb; }
+  .row input[type=range] { flex: 1; }
+  .row input[type=number] { width: 70px; background: #11141a; color: #cdd3dd; border: 1px solid #2a313c; border-radius: 3px; padding: 2px 4px; font-family: inherit; }
+  .val { width: 64px; text-align: right; color: #d8e2f0; }
+  .hint { color: #5e6b7d; font-size: 11px; line-height: 1.5; }
+  #manualState { color: #e8923a; }
 </style>
 </head>
 <body>
-<div id="hud">connecting…</div>
-<div id="conn" class="bad">offline</div>
+<div id="view"><div id="hud">connecting…</div><div id="conn" class="bad">offline</div></div>
+<div id="panel">
+  <h3>仿真控制</h3>
+  <div class="row">
+    <button id="btnPause">暂停</button>
+    <button id="btnStep">单步</button>
+    <button id="btnReset">重置</button>
+    倍率
+    <select id="selScale">
+      <option>0.2</option><option>0.5</option><option selected>1</option><option>2</option><option>5</option>
+    </select>
+  </div>
+  <div class="row">
+    <button id="btnMode">模式: AUTO</button>
+    <span id="manualState"></span>
+  </div>
+  <div class="hint">手动模式按键:W/S 前进/后退,A/D 左/右转,Q/E 上升/下降(松开归零)</div>
+
+  <h3>设定值</h3>
+  <div class="row"><label>高度 m</label><input type="number" id="spAlt" step="0.1" value="1.5"><button data-sp="alt">下发</button></div>
+  <div class="row"><label>航向 °</label><input type="number" id="spYaw" step="5" value="0"><button data-sp="yaw">下发</button></div>
+  <div class="row"><label>前速 m/s</label><input type="number" id="spSpd" step="0.05" value="0"><button data-sp="spd">下发</button></div>
+  <div class="row"><label>位置保持</label><input type="checkbox" id="spHold" checked>
+    N <input type="number" id="spN" step="0.5" value="0" style="width:54px">
+    E <input type="number" id="spE" step="0.5" value="0" style="width:54px">
+    <button data-sp="pos">下发</button></div>
+
+  <h3>遥测(滚动 30s,设定值虚线)</h3>
+  <canvas class="chart" id="chartAlt"></canvas>
+  <canvas class="chart" id="chartYaw"></canvas>
+  <canvas class="chart" id="chartSpd"></canvas>
+
+  <h3>PID 增益(拖动即实时生效)</h3>
+  <div id="gains"></div>
+  <div class="hint">输出限幅/滤波等高级参数见 config.py;此处只暴露 kp/ki/kd。</div>
+</div>
 
 <!--
-  渲染层约束(工程仿真规格):
-  - 不包含任何物理逻辑;
-  - 不为动画平滑插值/滤波物理状态,姿态与位置一律直接显示最近一次广播的原始值;
-  - 坐标转换已在服务端协议层完成(pos_three / quat_three_xyzw),此处直接使用。
+  渲染层约束(工程仿真规格):不含物理逻辑;不为动画平滑插值/滤波物理状态,
+  3D 姿态与曲线一律直接显示最近一次广播的原始值;坐标转换在服务端协议层完成。
 -->
 <script type="importmap">
 { "imports": {
@@ -31,173 +77,259 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// ---------- 场景 ----------
+// ============ 3D 场景 ============
+const view = document.getElementById('view');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x14171c);
-const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 200);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 200);
 camera.position.set(4, 3, 5);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-document.body.appendChild(renderer.domElement);
+view.appendChild(renderer.domElement);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.5, 0);
 
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight || innerHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+addEventListener('resize', resize);
+
 scene.add(new THREE.HemisphereLight(0xbcc7d8, 0x20242c, 1.0));
 const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-sun.position.set(5, 10, 3);
-scene.add(sun);
+sun.position.set(5, 10, 3); scene.add(sun);
+scene.add(new THREE.GridHelper(40, 40, 0x3a4250, 0x262c36));
+scene.add(new THREE.AxesHelper(1.0)); // x=东(红) y=上(绿) z=南(蓝)
 
-const grid = new THREE.GridHelper(40, 40, 0x3a4250, 0x262c36);
-scene.add(grid);
-scene.add(new THREE.AxesHelper(1.0)); // Three 世界系: x=东(红) y=上(绿) z=南(蓝)
-
-// ---------- 飞艇模型(几何尺寸与 config 一致:长2m,直径0.8m) ----------
-// 体轴(x前/y右/z下)经服务端基变换后,模型局部坐标系为:
-//   局部 x = 体轴 y(右), 局部 y = -体轴 z(上), 局部 z = -体轴 x(后)
-// 因此:艇身长轴沿局部 -z(机头朝 -z),吊舱在局部 -y,尾翼在局部 +z。
+// 飞艇模型(几何与 config 一致;局部系:x=体右, y=体上, z=体后,机头朝 -z)
 const ship = new THREE.Group();
-const hull = new THREE.Mesh(
-  new THREE.SphereGeometry(1, 32, 24),
+const hull = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24),
   new THREE.MeshStandardMaterial({ color: 0xb9c4d6, roughness: .55, metalness: .05 }));
-hull.scale.set(0.4, 0.4, 1.0);
-ship.add(hull);
-
-const nose = new THREE.Mesh(
-  new THREE.ConeGeometry(0.06, 0.16, 12),
+hull.scale.set(0.4, 0.4, 1.0); ship.add(hull);
+const nose = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.16, 12),
   new THREE.MeshStandardMaterial({ color: 0xd96a3b }));
-nose.rotation.x = -Math.PI / 2;          // 锥尖指向 -z(机头)
-nose.position.set(0, 0, -1.05);
-ship.add(nose);
-
-const gondola = new THREE.Mesh(
-  new THREE.BoxGeometry(0.18, 0.12, 0.3),
+nose.rotation.x = -Math.PI / 2; nose.position.set(0, 0, -1.05); ship.add(nose);
+const gondola = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.12, 0.3),
   new THREE.MeshStandardMaterial({ color: 0x46505e, roughness: .8 }));
-gondola.position.set(0, -0.49, 0);       // 浮心下 ~0.55m 处(贴囊体下沿)
-ship.add(gondola);
-
+gondola.position.set(0, -0.49, 0); ship.add(gondola);
 const finMat = new THREE.MeshStandardMaterial({ color: 0x8b96a8, side: THREE.DoubleSide });
 const finGeo = new THREE.PlaneGeometry(0.30, 0.26);
-const finV1 = new THREE.Mesh(finGeo, finMat);   // 垂直尾翼(局部 yz 平面)
-finV1.rotation.y = Math.PI / 2;
-finV1.position.set(0, 0.22, 0.85);
-const finV2 = finV1.clone(); finV2.position.y = -0.22;
-const finH1 = new THREE.Mesh(finGeo, finMat);   // 水平尾翼(局部 xz 平面)
-finH1.rotation.x = Math.PI / 2;
-finH1.position.set(0.22, 0, 0.85);
-const finH2 = finH1.clone(); finH2.position.x = -0.22;
-ship.add(finV1, finV2, finH1, finH2);
+const fv = new THREE.Mesh(finGeo, finMat); fv.rotation.y = Math.PI/2; fv.position.set(0, .22, .85);
+const fv2 = fv.clone(); fv2.position.y = -.22;
+const fh = new THREE.Mesh(finGeo, finMat); fh.rotation.x = Math.PI/2; fh.position.set(.22, 0, .85);
+const fh2 = fh.clone(); fh2.position.x = -.22;
+ship.add(fv, fv2, fh, fh2);
 scene.add(ship);
 
-// ---------- 箭头:风矢量(青)、电机推力(橙) ----------
-const windArrow = new THREE.ArrowHelper(
-  new THREE.Vector3(1,0,0), new THREE.Vector3(), 1, 0x2fb3c7, 0.25, 0.12);
+// 箭头
+const windArrow = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), 1, 0x2fb3c7, .25, .12);
 scene.add(windArrow);
-
-// 推力箭头挂在船体局部坐标:左右电机沿 -z(前),垂直电机沿 +y(上)
-function thrustArrow(px, py, pz, dir) {
-  const a = new THREE.ArrowHelper(dir, new THREE.Vector3(px, py, pz), 0.001, 0xe8923a, 0.08, 0.05);
-  ship.add(a);
-  return a;
-}
-const FWD = new THREE.Vector3(0, 0, -1), UP = new THREE.Vector3(0, 1, 0);
-const arrowL = thrustArrow(-0.10, -0.55, 0, FWD);
-const arrowR = thrustArrow( 0.10, -0.55, 0, FWD);
-const arrowV = thrustArrow( 0,    -0.62, 0, UP);
-const THRUST_SCALE = 20;   // 1N → 20m,0.05N 上限 → 1m 箭头
-
-function setThrust(arrow, baseDir, value_N) {
-  const len = Math.abs(value_N) * THRUST_SCALE;
-  arrow.setDirection(value_N >= 0 ? baseDir : baseDir.clone().negate());
-  arrow.setLength(Math.max(len, 1e-4), 0.08, 0.05);
-  arrow.visible = len > 1e-3;
+const FWD = new THREE.Vector3(0,0,-1), UP = new THREE.Vector3(0,1,0);
+function mkArrow(px,py,pz,dir){ const a=new THREE.ArrowHelper(dir,new THREE.Vector3(px,py,pz),.001,0xe8923a,.08,.05); ship.add(a); return a; }
+const arrowL = mkArrow(-.10,-.55,0,FWD), arrowR = mkArrow(.10,-.55,0,FWD), arrowV = mkArrow(0,-.62,0,UP);
+const THRUST_SCALE = 20;
+function setThrust(a, base, v){
+  const len = Math.abs(v)*THRUST_SCALE;
+  a.setDirection(v >= 0 ? base : base.clone().negate());
+  a.setLength(Math.max(len,1e-4), .08, .05);
+  a.visible = len > 1e-3;
 }
 
-// ---------- 轨迹拖尾 ----------
-const TRAIL_MAX = 3000;   // 50Hz × 60s
-const trailPos = new Float32Array(TRAIL_MAX * 3);
+// 轨迹拖尾
+const TRAIL_MAX = 3000;
+const trailPos = new Float32Array(TRAIL_MAX*3);
 const trailGeo = new THREE.BufferGeometry();
-trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
-trailGeo.setDrawRange(0, 0);
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos,3));
+trailGeo.setDrawRange(0,0);
 const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x5d86c5 }));
-trail.frustumCulled = false;
-scene.add(trail);
+trail.frustumCulled = false; scene.add(trail);
 let trailLen = 0;
-
-function pushTrail(p) {
-  if (trailLen < TRAIL_MAX) {
-    trailPos.set(p, trailLen * 3);
-    trailLen++;
-  } else {
-    trailPos.copyWithin(0, 3);
-    trailPos.set(p, (TRAIL_MAX - 1) * 3);
-  }
+function pushTrail(p){
+  if (trailLen < TRAIL_MAX) { trailPos.set(p, trailLen*3); trailLen++; }
+  else { trailPos.copyWithin(0,3); trailPos.set(p,(TRAIL_MAX-1)*3); }
   trailGeo.setDrawRange(0, trailLen);
   trailGeo.attributes.position.needsUpdate = true;
 }
+function clearTrail(){ trailLen = 0; trailGeo.setDrawRange(0,0); }
 
-// ---------- WebSocket(断线自动重连,仿真端不依赖前端) ----------
+// ============ 遥测曲线(canvas,30s 滚动) ============
+const WINDOW_S = 30;
+class Chart {
+  constructor(id, title, unit) {
+    this.cv = document.getElementById(id);
+    this.ctx = this.cv.getContext('2d');
+    this.title = title; this.unit = unit;
+    this.data = [];   // {t, sp, meas}
+  }
+  push(t, sp, meas) {
+    this.data.push({t, sp, meas});
+    const t0 = t - WINDOW_S;
+    while (this.data.length && this.data[0].t < t0) this.data.shift();
+  }
+  clear() { this.data = []; }
+  draw() {
+    const { ctx, cv } = this;
+    if (cv.width !== cv.clientWidth*2) { cv.width = cv.clientWidth*2; cv.height = cv.clientHeight*2; }
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0,0,W,H);
+    ctx.font = '20px ui-monospace'; ctx.fillStyle = '#8fa1bb';
+    if (!this.data.length) { ctx.fillText(this.title, 10, 26); return; }
+    let lo = Infinity, hi = -Infinity;
+    for (const d of this.data) { lo = Math.min(lo,d.sp,d.meas); hi = Math.max(hi,d.sp,d.meas); }
+    const pad = Math.max((hi-lo)*0.15, 1e-3); lo -= pad; hi += pad;
+    const tEnd = this.data[this.data.length-1].t, t0 = tEnd - WINDOW_S;
+    const X = t => (t-t0)/WINDOW_S*W, Y = v => H - (v-lo)/(hi-lo)*H;
+    const line = (key, color, dash) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.setLineDash(dash);
+      ctx.beginPath();
+      this.data.forEach((d,i) => i ? ctx.lineTo(X(d.t),Y(d[key])) : ctx.moveTo(X(d.t),Y(d[key])));
+      ctx.stroke(); ctx.setLineDash([]);
+    };
+    line('sp', '#7d8ea6', [8,6]);
+    line('meas', '#4fa3e3', []);
+    const last = this.data[this.data.length-1];
+    ctx.fillStyle = '#8fa1bb';
+    ctx.fillText(`${this.title}  ${last.meas.toFixed(2)} ${this.unit} (sp ${last.sp.toFixed(2)})`, 10, 26);
+    ctx.fillStyle = '#5e6b7d';
+    ctx.fillText(hi.toFixed(1), W-78, 26); ctx.fillText(lo.toFixed(1), W-78, H-10);
+  }
+}
+const chAlt = new Chart('chartAlt','高度','m');
+const chYaw = new Chart('chartYaw','航向','°');
+const chSpd = new Chart('chartSpd','前速','m/s');
+
+// ============ WebSocket ============
 const hud = document.getElementById('hud');
-const conn = document.getElementById('conn');
-let lastState = null;
+const connEl = document.getElementById('conn');
+let ws = null, lastState = null, lastResetT = 0;
 
+function send(obj){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 function connect() {
-  const ws = new WebSocket(`ws://${location.hostname}:8765/`);
-  ws.onopen = () => { conn.textContent = 'online'; conn.className = 'ok'; };
-  ws.onclose = () => {
-    conn.textContent = 'offline – retrying'; conn.className = 'bad';
-    setTimeout(connect, 1000);
-  };
+  ws = new WebSocket(`ws://${location.hostname}:8765/`);
+  ws.onopen = () => { connEl.textContent = 'online'; connEl.className = 'ok'; };
+  ws.onclose = () => { connEl.textContent = 'offline – retrying'; connEl.className = 'bad'; setTimeout(connect, 1000); };
   ws.onerror = () => ws.close();
-  ws.onmessage = (ev) => {
-    const m = JSON.parse(ev.data);
-    if (m.type === 'state') onState(m);
-  };
-  window._ws = ws;   // 阶段4控制面板使用
+  ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.type === 'state') onState(m); };
 }
 connect();
 
 function onState(m) {
+  const first = lastState === null;
+  if (lastState && m.t_s < lastState.t_s) { clearTrail(); chAlt.clear(); chYaw.clear(); chSpd.clear(); } // 服务端重置
   lastState = m;
-  // 原始状态直接上屏,无插值(规格要求)
   ship.position.fromArray(m.pos_three);
-  const q = m.quat_three_xyzw;
-  ship.quaternion.set(q[0], q[1], q[2], q[3]);
+  ship.quaternion.set(...m.quat_three_xyzw);
   pushTrail(m.pos_three);
-
   setThrust(arrowL, FWD, m.thrust_N[0]);
   setThrust(arrowR, FWD, m.thrust_N[1]);
   setThrust(arrowV, UP,  m.thrust_N[2]);
+  const wv = new THREE.Vector3().fromArray(m.wind_three), wl = wv.length();
+  windArrow.position.set(m.pos_three[0], m.pos_three[1]+1.2, m.pos_three[2]);
+  windArrow.visible = wl > 1e-3;
+  if (windArrow.visible) { windArrow.setDirection(wv.normalize()); windArrow.setLength(wl,.25,.12); }
 
-  const wv = new THREE.Vector3().fromArray(m.wind_three);
-  const wlen = wv.length();
-  windArrow.position.set(m.pos_three[0], m.pos_three[1] + 1.2, m.pos_three[2]);
-  if (wlen > 1e-3) {
-    windArrow.visible = true;
-    windArrow.setDirection(wv.normalize());
-    windArrow.setLength(wlen, 0.25, 0.12);   // 1 m/s → 1m 箭头
-  } else windArrow.visible = false;
+  chAlt.push(m.t_s, m.pid.alt.sp,  -m.pos_ned_m[2]);
+  chYaw.push(m.t_s, m.pid.yaw.sp,  m.euler_deg[2]);
+  chSpd.push(m.t_s, m.pid.speed.sp, m.v_body_m_s[0]);
 
   hud.textContent =
-    `t      ${m.t_s.toFixed(2)} s${m.running ? '' : '  [paused]'}  ×${m.time_scale}\n` +
+    `t      ${m.t_s.toFixed(2)} s${m.running?'':'  [paused]'}  ×${m.time_scale}\n` +
     `alt    ${(-m.pos_ned_m[2]).toFixed(2)} m  (sp ${m.pid.alt.sp.toFixed(2)})\n` +
     `yaw    ${m.euler_deg[2].toFixed(1)} °  (sp ${m.pid.yaw.sp.toFixed(1)})\n` +
     `pitch  ${m.euler_deg[1].toFixed(1)} °   roll ${m.euler_deg[0].toFixed(1)} °\n` +
     `u      ${m.v_body_m_s[0].toFixed(2)} m/s (sp ${m.pid.speed.sp.toFixed(2)})\n` +
-    `thrust L ${m.thrust_N[0].toFixed(3)}  R ${m.thrust_N[1].toFixed(3)}  V ${m.thrust_N[2].toFixed(3)} N\n` +
+    `thrust L ${m.thrust_N[0].toFixed(3)} R ${m.thrust_N[1].toFixed(3)} V ${m.thrust_N[2].toFixed(3)} N\n` +
     `wind   ${Math.hypot(...m.wind_ned_m_s).toFixed(2)} m/s   ρ ${m.rho_kg_m3.toFixed(3)}\n` +
     `mode   ${m.manual ? 'MANUAL' : 'AUTO'}`;
+
+  btnPause.textContent = m.running ? '暂停' : '继续';
+  btnMode.textContent = `模式: ${m.manual ? 'MANUAL' : 'AUTO'}`;
+  btnMode.classList.toggle('active', m.manual);
+  if (first) buildGainSliders(m.gains);
 }
 
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
+// ============ 控制面板 ============
+const btnPause = document.getElementById('btnPause');
+const btnMode  = document.getElementById('btnMode');
+btnPause.onclick = () => send({type: lastState && lastState.running ? 'pause' : 'resume'});
+document.getElementById('btnStep').onclick  = () => send({type:'step'});
+document.getElementById('btnReset').onclick = () => send({type:'reset'});
+document.getElementById('selScale').onchange = e => send({type:'time_scale', value: parseFloat(e.target.value)});
+btnMode.onclick = () => send({type:'manual', enable: !(lastState && lastState.manual)});
+
+document.querySelectorAll('[data-sp]').forEach(b => b.onclick = () => {
+  const kind = b.dataset.sp;
+  if (kind === 'alt') send({type:'set_setpoints', altitude_m: parseFloat(spAlt.value)});
+  if (kind === 'yaw') send({type:'set_setpoints', yaw_deg: parseFloat(spYaw.value), pos_hold: false});
+  if (kind === 'spd') send({type:'set_setpoints', speed_m_s: parseFloat(spSpd.value), pos_hold: false});
+  if (kind === 'pos') send({type:'set_setpoints', pos_hold: spHold.checked,
+                            target_n_m: parseFloat(spN.value), target_e_m: parseFloat(spE.value)});
+});
+const spAlt = document.getElementById('spAlt'), spYaw = document.getElementById('spYaw'),
+      spSpd = document.getElementById('spSpd'), spHold = document.getElementById('spHold'),
+      spN = document.getElementById('spN'), spE = document.getElementById('spE');
+
+// PID 滑块(范围取默认值的 0~4 倍,详见 config.py 注释)
+const gainsDiv = document.getElementById('gains');
+function buildGainSliders(gains) {
+  gainsDiv.innerHTML = '';
+  for (const ch of ['alt','yaw','speed']) {
+    const h = document.createElement('div');
+    h.innerHTML = `<b style="color:#8fa1bb">${{alt:'高度',yaw:'偏航',speed:'前速'}[ch]}</b>`;
+    gainsDiv.appendChild(h);
+    for (const k of ['kp','ki','kd']) {
+      const init = gains[ch][k];
+      const max = init > 0 ? init*4 : {kp:1,ki:.1,kd:1}[k];
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = `<label>${k}</label>
+        <input type="range" min="0" max="${max}" step="${max/200}" value="${init}">
+        <span class="val">${init.toPrecision(3)}</span>`;
+      const slider = row.querySelector('input'), val = row.querySelector('.val');
+      slider.oninput = () => {
+        val.textContent = parseFloat(slider.value).toPrecision(3);
+        send({type:'set_gains', channel: ch, gains: {[k]: parseFloat(slider.value)}});
+      };
+      gainsDiv.appendChild(row);
+    }
+  }
+}
+
+// ============ 手动模式键盘(WASD+QE,松开归零) ============
+const keys = {};
+const F_MAX = 0.05;   // 与 config.actuator.thrust_max_N 一致,仅用于手动指令幅值
+function manualFromKeys() {
+  const fwd  = (keys['w']?1:0) - (keys['s']?1:0);
+  const turn = (keys['d']?1:0) - (keys['a']?1:0);   // d=右转(左推力大)
+  const vert = (keys['q']?1:0) - (keys['e']?1:0);
+  return {
+    left_N:  Math.max(-F_MAX, Math.min(F_MAX, (fwd + turn) * F_MAX)),
+    right_N: Math.max(-F_MAX, Math.min(F_MAX, (fwd - turn) * F_MAX)),
+    vertical_N: vert * F_MAX,
+  };
+}
+function updateManual() {
+  if (!(lastState && lastState.manual)) return;
+  send({type:'manual_cmd', ...manualFromKeys()});
+  document.getElementById('manualState').textContent =
+    Object.keys(keys).filter(k=>keys[k]).join(' ').toUpperCase();
+}
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const k = e.key.toLowerCase();
+  if ('wasdqe'.includes(k) && !keys[k]) { keys[k] = true; updateManual(); }
+});
+addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if ('wasdqe'.includes(k)) { keys[k] = false; updateManual(); }
 });
 
-(function animate() {
+// ============ 渲染循环(只画,不算) ============
+resize();
+(function animate(){
   requestAnimationFrame(animate);
   controls.update();
   renderer.render(scene, camera);
+  chAlt.draw(); chYaw.draw(); chSpd.draw();
 })();
 </script>
 </body>
