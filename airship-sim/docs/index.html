@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>飞艇仿真 — 6DOF 工程仿真</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #14171c; color: #cdd3dd; font-family: ui-monospace, Menlo, Consolas, monospace; overflow: hidden; display: flex; }
+  #view { flex: 1; position: relative; }
+  #hud { position: absolute; top: 10px; left: 10px; background: rgba(10,12,16,.72); padding: 10px 14px; border-radius: 6px; font-size: 12px; line-height: 1.7; pointer-events: none; white-space: pre; }
+  #panel { width: 380px; height: 100vh; overflow-y: auto; background: #1a1e25; border-left: 1px solid #2a313c; padding: 10px; font-size: 12px; }
+  #panel h3 { margin: 12px 0 6px; font-size: 12px; color: #8fa1bb; border-bottom: 1px solid #2a313c; padding-bottom: 4px; }
+  button { background: #2c3440; color: #cdd3dd; border: 1px solid #3a4250; border-radius: 4px; padding: 4px 10px; margin: 2px; cursor: pointer; font-family: inherit; font-size: 12px; }
+  button:hover { background: #39434f; }
+  button.active { background: #2b5a8c; border-color: #3d77b5; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  canvas.chart { width: 100%; height: 110px; background: #11141a; border: 1px solid #2a313c; border-radius: 4px; display: block; margin-bottom: 6px; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .row label { width: 60px; color: #8fa1bb; }
+  .row input[type=range] { flex: 1; }
+  .row input[type=number] { width: 70px; background: #11141a; color: #cdd3dd; border: 1px solid #2a313c; border-radius: 3px; padding: 2px 4px; font-family: inherit; }
+  .val { width: 64px; text-align: right; color: #d8e2f0; }
+  .hint { color: #5e6b7d; font-size: 11px; line-height: 1.5; }
+  select { background: #2c3440; color: #cdd3dd; border: 1px solid #3a4250; border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: 12px; }
+  #manualState { color: #e8923a; }
+
+  /* Loading overlay */
+  #loading {
+    position: fixed; inset: 0; background: #0d1014;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 999; gap: 18px;
+  }
+  #loading h1 { margin: 0; font-size: 18px; color: #8fa1bb; font-weight: normal; }
+  #loadBar { width: 320px; height: 6px; background: #2a313c; border-radius: 3px; overflow: hidden; }
+  #loadFill { height: 100%; background: #3d77b5; width: 0%; transition: width .3s; border-radius: 3px; }
+  #loadMsg { font-size: 12px; color: #5e6b7d; min-height: 18px; }
+  #loadNote { font-size: 11px; color: #3a4250; text-align: center; max-width: 340px; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading">
+  <h1>飞艇 6DOF 工程仿真</h1>
+  <div id="loadBar"><div id="loadFill"></div></div>
+  <div id="loadMsg">正在加载…</div>
+  <div id="loadNote">首次加载需下载 Pyodide + numpy (~45MB)<br>加载完成后物理计算在浏览器本地运行</div>
+</div>
+
+<!-- 3D 视图 -->
+<div id="view"><div id="hud">loading…</div></div>
+
+<!-- 控制面板 -->
+<div id="panel">
+  <h3>仿真控制</h3>
+  <div class="row">
+    <button id="btnPause" disabled>暂停</button>
+    <button id="btnStep" disabled>单步</button>
+    <button id="btnReset" disabled>重置</button>
+    倍率
+    <select id="selScale" disabled>
+      <option>0.2</option><option>0.5</option><option selected>1</option><option>2</option><option>5</option>
+    </select>
+  </div>
+  <div class="row">
+    <button id="btnMode" disabled>模式: AUTO</button>
+    <span id="manualState"></span>
+  </div>
+  <div class="hint">手动模式按键: W/S 前进/后退, A/D 左/右转, Q/E 上升/下降(松开归零)</div>
+
+  <h3>设定值</h3>
+  <div class="row"><label>高度 m</label><input type="number" id="spAlt" step="0.1" value="1.5" disabled><button data-sp="alt" disabled>下发</button></div>
+  <div class="row"><label>航向 °</label><input type="number" id="spYaw" step="5" value="0" disabled><button data-sp="yaw" disabled>下发</button></div>
+  <div class="row"><label>前速 m/s</label><input type="number" id="spSpd" step="0.05" value="0" disabled><button data-sp="spd" disabled>下发</button></div>
+  <div class="row"><label>位置保持</label><input type="checkbox" id="spHold" checked disabled>
+    N <input type="number" id="spN" step="0.5" value="0" style="width:54px" disabled>
+    E <input type="number" id="spE" step="0.5" value="0" style="width:54px" disabled>
+    <button data-sp="pos" disabled>下发</button></div>
+
+  <h3>遥测(滚动 30s,设定值虚线)</h3>
+  <canvas class="chart" id="chartAlt"></canvas>
+  <canvas class="chart" id="chartYaw"></canvas>
+  <canvas class="chart" id="chartSpd"></canvas>
+
+  <h3>PID 增益(拖动即实时生效)</h3>
+  <div id="gains"></div>
+  <div class="hint">输出限幅/滤波等高级参数见 config.py</div>
+
+  <h3>大气</h3>
+  <div class="row">
+    <label>模式</label>
+    <select id="atmoMode" disabled>
+      <option value="constant">室内(常密度)</option>
+      <option value="isa_low">低空 ISA + 边界层风</option>
+      <option value="isa_high">高空 ISA 0-30km</option>
+    </select>
+  </div>
+  <div id="atmoNA" class="hint">当前为室内常密度模型</div>
+  <div id="atmo" style="display:none">
+    <div class="row"><label>ΔT K</label>
+      <input type="range" id="atDT" min="-20" max="20" step="0.5" value="0"><span class="val" id="atDTv">0</span></div>
+    <div class="row"><label>湍流</label>
+      <input type="range" id="atTurb" min="0" max="2" step="0.05" value="0"><span class="val" id="atTurbv">0</span></div>
+    <div class="row"><label>预置</label>
+      <button data-preset="calm">无风</button>
+      <button data-preset="low">低空边界层</button>
+      <button data-preset="high">高空0-30km</button></div>
+    <div id="windLayers"></div>
+    <div class="row"><label>阵风</label>
+      向<input type="number" id="gustDir" value="90" style="width:48px">°
+      幅<input type="number" id="gustAmp" value="1.0" step="0.2" style="width:48px">m/s
+      时<input type="number" id="gustDur" value="3" step="0.5" style="width:42px">s
+      <button id="btnGust">触发</button></div>
+    <div class="row"><label>太阳辐照</label>
+      <input type="checkbox" id="atSolar">
+      <input type="number" id="atFlux" value="1000" step="100" style="width:64px">W/m²
+      <span id="heInfo" class="hint"></span></div>
+    <div class="hint">垂直剖面:左=风速,右=密度;横线=飞艇当前高度</div>
+    <canvas class="chart" id="chartProfile" style="height:220px"></canvas>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label>常值风</label>
+    N<input type="number" id="windN" value="0" step="0.1" style="width:52px">
+    E<input type="number" id="windE" value="0" step="0.1" style="width:52px">
+    m/s
+    <button id="btnWind" disabled>下发</button>
+  </div>
+</div>
+
+<!--
+  渲染层约束(工程仿真规格):不含物理逻辑;不为动画平滑插值/滤波物理状态,
+  3D 姿态与曲线一律直接显示最近一次推进后的原始状态值;坐标转换在 Python 层完成。
+-->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============ 3D 场景 ============
+const view = document.getElementById('view');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14171c);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 200);
+camera.position.set(4, 3, 5);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+view.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.5, 0);
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight || innerHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+addEventListener('resize', resize);
+resize();
+
+scene.add(new THREE.HemisphereLight(0xbcc7d8, 0x20242c, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(5, 10, 3); scene.add(sun);
+scene.add(new THREE.GridHelper(40, 40, 0x3a4250, 0x262c36));
+scene.add(new THREE.AxesHelper(1.0)); // x=东(红) y=上(绿) z=南(蓝)
+
+// 飞艇模型
+const ship = new THREE.Group();
+const hull = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24),
+  new THREE.MeshStandardMaterial({ color: 0xb9c4d6, roughness: .55, metalness: .05 }));
+hull.scale.set(0.4, 0.4, 1.0); ship.add(hull);
+const nose = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.16, 12),
+  new THREE.MeshStandardMaterial({ color: 0xd96a3b }));
+nose.rotation.x = -Math.PI / 2; nose.position.set(0, 0, -1.05); ship.add(nose);
+const gondola = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.12, 0.3),
+  new THREE.MeshStandardMaterial({ color: 0x46505e, roughness: .8 }));
+gondola.position.set(0, -0.49, 0); ship.add(gondola);
+const finMat = new THREE.MeshStandardMaterial({ color: 0x8b96a8, side: THREE.DoubleSide });
+const finGeo = new THREE.PlaneGeometry(0.30, 0.26);
+const fv = new THREE.Mesh(finGeo, finMat); fv.rotation.y = Math.PI/2; fv.position.set(0, .22, .85);
+const fv2 = fv.clone(); fv2.position.y = -.22;
+const fh = new THREE.Mesh(finGeo, finMat); fh.rotation.x = Math.PI/2; fh.position.set(.22, 0, .85);
+const fh2 = fh.clone(); fh2.position.x = -.22;
+ship.add(fv, fv2, fh, fh2);
+scene.add(ship);
+
+// 箭头
+const windArrow = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), 1, 0x2fb3c7, .25, .12);
+scene.add(windArrow);
+const FWD = new THREE.Vector3(0,0,-1), UP = new THREE.Vector3(0,1,0);
+function mkArrow(px,py,pz,dir){ const a=new THREE.ArrowHelper(dir,new THREE.Vector3(px,py,pz),.001,0xe8923a,.08,.05); ship.add(a); return a; }
+const arrowL = mkArrow(-.10,-.55,0,FWD), arrowR = mkArrow(.10,-.55,0,FWD), arrowV = mkArrow(0,-.62,0,UP);
+const THRUST_SCALE = 20;
+function setThrust(a, base, v){
+  const len = Math.abs(v)*THRUST_SCALE;
+  a.setDirection(v >= 0 ? base : base.clone().negate());
+  a.setLength(Math.max(len,1e-4), .08, .05);
+  a.visible = len > 1e-3;
+}
+
+// 轨迹拖尾
+const TRAIL_MAX = 3000;
+const trailPos = new Float32Array(TRAIL_MAX*3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos,3));
+trailGeo.setDrawRange(0,0);
+const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x5d86c5 }));
+trail.frustumCulled = false; scene.add(trail);
+let trailLen = 0;
+function pushTrail(p){
+  if (trailLen < TRAIL_MAX) { trailPos.set(p, trailLen*3); trailLen++; }
+  else { trailPos.copyWithin(0,3); trailPos.set(p,(TRAIL_MAX-1)*3); }
+  trailGeo.setDrawRange(0, trailLen);
+  trailGeo.attributes.position.needsUpdate = true;
+}
+function clearTrail(){ trailLen = 0; trailGeo.setDrawRange(0,0); }
+
+// ============ 遥测曲线 ============
+const WINDOW_S = 30;
+class Chart {
+  constructor(id, title, unit) {
+    this.cv = document.getElementById(id);
+    this.ctx = this.cv.getContext('2d');
+    this.title = title; this.unit = unit;
+    this.data = [];
+  }
+  push(t, sp, meas) {
+    this.data.push({t, sp, meas});
+    const t0 = t - WINDOW_S;
+    while (this.data.length && this.data[0].t < t0) this.data.shift();
+  }
+  clear() { this.data = []; }
+  draw() {
+    const { ctx, cv } = this;
+    if (cv.width !== cv.clientWidth*2) { cv.width = cv.clientWidth*2; cv.height = cv.clientHeight*2; }
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0,0,W,H);
+    ctx.font = '20px ui-monospace'; ctx.fillStyle = '#8fa1bb';
+    if (!this.data.length) { ctx.fillText(this.title, 10, 26); return; }
+    let lo = Infinity, hi = -Infinity;
+    for (const d of this.data) { lo = Math.min(lo,d.sp,d.meas); hi = Math.max(hi,d.sp,d.meas); }
+    const pad = Math.max((hi-lo)*0.15, 1e-3); lo -= pad; hi += pad;
+    const tEnd = this.data[this.data.length-1].t, t0 = tEnd - WINDOW_S;
+    const X = t => (t-t0)/WINDOW_S*W, Y = v => H - (v-lo)/(hi-lo)*H;
+    const line = (key, color, dash) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.setLineDash(dash);
+      ctx.beginPath();
+      this.data.forEach((d,i) => i ? ctx.lineTo(X(d.t),Y(d[key])) : ctx.moveTo(X(d.t),Y(d[key])));
+      ctx.stroke(); ctx.setLineDash([]);
+    };
+    line('sp', '#7d8ea6', [8,6]);
+    line('meas', '#4fa3e3', []);
+    const last = this.data[this.data.length-1];
+    ctx.fillStyle = '#8fa1bb';
+    ctx.fillText(`${this.title}  ${last.meas.toFixed(2)} ${this.unit} (sp ${last.sp.toFixed(2)})`, 10, 26);
+    ctx.fillStyle = '#5e6b7d';
+    ctx.fillText(hi.toFixed(1), W-78, 26); ctx.fillText(lo.toFixed(1), W-78, H-10);
+  }
+}
+const chAlt = new Chart('chartAlt','高度','m');
+const chYaw = new Chart('chartYaw','航向','°');
+const chSpd = new Chart('chartSpd','前速','m/s');
+
+// ============ Pyodide 仿真桥 ============
+const hud = document.getElementById('hud');
+let py = null;         // pyodide 实例
+let pyReady = false;
+let lastState = null;
+let simRunning = true;
+let simTimeScale = 1.0;
+let pendingSimMs = 0;
+let lastFrameTs = null;
+let profileData = null;
+
+function setLoadProgress(pct, msg) {
+  document.getElementById('loadFill').style.width = pct + '%';
+  document.getElementById('loadMsg').textContent = msg;
+}
+
+// Python 仿真初始化代码(嵌入字符串,在 Pyodide 内执行)
+const PYTHON_SETUP = `
+import sys, json, dataclasses
+import numpy as np
+sys.path.insert(0, '/')
+
+from airship_sim.config import default_config, PidGains, AtmosphereConfig
+from airship_sim.simulation import Simulation
+from airship_sim.dynamics import IDX_POS, IDX_QUAT, IDX_VEL, IDX_OMEGA, IDX_THRUST
+from airship_sim.math3d import quat_to_euler
+from airship_sim.atmosphere import (IsaAtmosphere, ConstantAtmosphere, make_atmosphere,
+    wind_layers_low_altitude, wind_layers_high_altitude, isa_state)
+
+_INIT_POS = (0.0, 0.0, -1.5)
+cfg = default_config(heaviness_kg=0.005)
+sim = Simulation(cfg)
+_running = True
+_time_scale = 1.0
+
+def _reset():
+    sim.reset(p_ned_m=_INIT_POS)
+    sp = sim.controller.setpoints
+    sp.altitude_m = 1.5
+    sp.pos_hold = True
+    sp.target_n_m = 0.0
+    sp.target_e_m = 0.0
+
+_reset()
+
+def _ned_to_three(v):
+    return [float(v[1]), float(-v[2]), float(-v[0])]
+
+def _quat_ned_to_three_xyzw(q):
+    w, x, y, z = (float(c) for c in q)
+    return [y, -z, -x, w]
+
+def step_sim(n):
+    for _ in range(int(n)):
+        sim.step(record=False)
+
+def get_state_json():
+    x = sim.x
+    q = x[IDX_QUAT]
+    eul = quat_to_euler(q)
+    d = sim.controller.debug
+    atm = sim.atmosphere.get_state(x[IDX_POS], sim.t_s)
+    ctl = sim.controller
+    msg = {
+        "type": "state",
+        "t_s": round(sim.t_s, 4),
+        "running": _running,
+        "time_scale": _time_scale,
+        "pos_ned_m": [float(v) for v in x[IDX_POS]],
+        "quat_wxyz": [float(v) for v in q],
+        "pos_three": _ned_to_three(x[IDX_POS]),
+        "quat_three_xyzw": _quat_ned_to_three_xyzw(q),
+        "euler_deg": [float(np.rad2deg(a)) for a in eul],
+        "v_body_m_s": [float(v) for v in x[IDX_VEL]],
+        "omega_deg_s": [float(np.rad2deg(v)) for v in x[IDX_OMEGA]],
+        "thrust_N": [float(v) for v in x[IDX_THRUST]],
+        "cmd_N": [float(v) for v in sim.cmd.as_array()],
+        "pid": {
+            "alt": {"sp": d.alt_sp_m, "meas": d.alt_meas_m, "out": d.alt_out_N},
+            "yaw": {"sp": float(np.rad2deg(d.yaw_sp_rad)),
+                    "meas": float(np.rad2deg(d.yaw_meas_rad)),
+                    "out": d.yaw_out_Nm},
+            "speed": {"sp": d.speed_sp_m_s, "meas": d.speed_meas_m_s,
+                      "out": d.speed_out_N},
+        },
+        "wind_ned_m_s": [float(v) for v in atm.wind_ned_m_s],
+        "wind_three": _ned_to_three(atm.wind_ned_m_s),
+        "rho_kg_m3": float(atm.rho_kg_m3),
+        "manual": ctl.manual_mode,
+        "gains": {ch: dataclasses.asdict(pid.g) for ch, pid in
+                  [("alt", ctl.pid_alt), ("yaw", ctl.pid_yaw),
+                   ("speed", ctl.pid_speed)]},
+    }
+    atm_obj = sim.atmosphere
+    if isinstance(atm_obj, IsaAtmosphere):
+        hcfg = sim.cfg.helium
+        t_amb = atm.temperature_K
+        msg["atmosphere"] = {
+            "model": "isa",
+            "dT_K": atm_obj.dT_K,
+            "turbulence_intensity": atm_obj.turbulence_intensity,
+            "wind_layers": [list(map(float, l)) for l in atm_obj.wind_layers],
+            "alt_m": float(atm_obj.ground_alt_m - x[IDX_POS][2]),
+            "helium": {
+                "enabled": hcfg.enabled,
+                "solar_on": hcfg.solar_on,
+                "T_K": float(sim.helium_T_K) if sim.helium_T_K is not None else None,
+                "superheat_K": (float(sim.helium_T_K - t_amb)
+                                if sim.helium_T_K is not None else 0.0),
+                "m_kg": float(sim.helium_m_kg),
+            },
+        }
+    return json.dumps(msg)
+
+def get_profile_json():
+    atm = sim.atmosphere
+    if isinstance(atm, IsaAtmosphere):
+        top = max((l[0] for l in atm.wind_layers), default=100.0)
+        top = max(top, 50.0)
+        alts = np.linspace(0.0, top, 41)
+        wind = [atm.wind_mean_ned(a) for a in alts]
+        spd = [float(np.hypot(w[0], w[1])) for w in wind]
+        ddeg = [float(np.rad2deg(np.arctan2(w[1], w[0]))) for w in wind]
+        rho = [isa_state(a, atm.dT_K)[2] for a in alts]
+    else:
+        alts, spd, ddeg = [0.0, 100.0], [0.0, 0.0], [0.0, 0.0]
+        rho = [sim.cfg.atmosphere.rho_const_kg_m3] * 2
+    return json.dumps({"type": "profile",
+                       "alt_m": [float(a) for a in alts],
+                       "wind_speed_m_s": spd,
+                       "wind_dir_deg": ddeg,
+                       "rho_kg_m3": [float(r) for r in rho]})
+
+def handle_command(json_str):
+    global _running, _time_scale
+    msg = json.loads(json_str)
+    t = msg.get("type")
+    if t == "pause":
+        _running = False
+    elif t == "resume":
+        _running = True
+    elif t == "reset":
+        _reset()
+    elif t == "step":
+        if not _running:
+            for _ in range(sim._ticks_per_ctrl):
+                sim.step(record=False)
+    elif t == "time_scale":
+        _time_scale = float(np.clip(float(msg["value"]), 0.1, 10.0))
+    elif t == "set_gains":
+        ch = msg["channel"]
+        pid = {"alt": sim.controller.pid_alt, "yaw": sim.controller.pid_yaw,
+               "speed": sim.controller.pid_speed}[ch]
+        cur = dataclasses.asdict(pid.g)
+        cur.update({k: float(v) for k, v in msg["gains"].items() if k in cur})
+        sim.controller.set_gains(ch, PidGains(**cur))
+    elif t == "set_setpoints":
+        sp = sim.controller.setpoints
+        if "altitude_m" in msg: sp.altitude_m = float(msg["altitude_m"])
+        if "yaw_deg" in msg: sp.yaw_rad = float(np.deg2rad(float(msg["yaw_deg"])))
+        if "speed_m_s" in msg: sp.speed_m_s = float(msg["speed_m_s"])
+        if "pos_hold" in msg: sp.pos_hold = bool(msg["pos_hold"])
+        if "target_n_m" in msg: sp.target_n_m = float(msg["target_n_m"])
+        if "target_e_m" in msg: sp.target_e_m = float(msg["target_e_m"])
+    elif t == "manual":
+        sim.controller.manual_mode = bool(msg["enable"])
+    elif t == "manual_cmd":
+        mc = sim.controller.manual_cmd
+        mc.left_N = float(msg.get("left_N", mc.left_N))
+        mc.right_N = float(msg.get("right_N", mc.right_N))
+        mc.vertical_N = float(msg.get("vertical_N", mc.vertical_N))
+    elif t == "set_wind":
+        sim.atmosphere.set_uniform_wind(msg["wind_ned_m_s"])
+    elif t == "set_atmosphere":
+        atm = sim.atmosphere
+        if not isinstance(atm, IsaAtmosphere): return
+        if "dT_K" in msg: atm.dT_K = float(msg["dT_K"])
+        if "turbulence_intensity" in msg:
+            atm.turbulence_intensity = float(np.clip(float(msg["turbulence_intensity"]), 0.0, 3.0))
+    elif t == "set_wind_layer":
+        atm = sim.atmosphere
+        if not isinstance(atm, IsaAtmosphere): return
+        layer = atm.wind_layers[int(msg["index"])]
+        if "speed_m_s" in msg: layer[1] = max(0.0, float(msg["speed_m_s"]))
+        if "dir_deg" in msg: layer[2] = float(msg["dir_deg"])
+    elif t == "set_wind_preset":
+        atm = sim.atmosphere
+        if not isinstance(atm, IsaAtmosphere): return
+        p = msg["preset"]
+        if p == "calm": atm.wind_layers = []
+        elif p == "low": atm.wind_layers = [list(l) for l in wind_layers_low_altitude()]
+        elif p == "high": atm.wind_layers = [list(l) for l in wind_layers_high_altitude()]
+    elif t == "gust":
+        atm = sim.atmosphere
+        if not isinstance(atm, IsaAtmosphere): return
+        atm.trigger_gust(t_s=sim.t_s,
+            dir_to_deg=float(msg.get("dir_deg", 0.0)),
+            amplitude_m_s=float(msg.get("amplitude_m_s", 1.0)),
+            duration_s=float(msg.get("duration_s", 3.0)))
+    elif t == "set_solar":
+        if "on" in msg: sim.cfg.helium.solar_on = bool(msg["on"])
+        if "flux_W_m2" in msg: sim.cfg.helium.solar_flux_W_m2 = float(msg["flux_W_m2"])
+    elif t == "set_atmo_mode":
+        mode = msg["mode"]
+        if mode == "constant":
+            new_atm = ConstantAtmosphere(sim.cfg.atmosphere)
+        else:
+            new_cfg_atm = AtmosphereConfig(mode="isa", ground_alt_m=0.0)
+            new_atm = make_atmosphere(new_cfg_atm, seed=cfg.seed + 1)
+            if mode == "isa_low":
+                new_atm.wind_layers = [list(l) for l in wind_layers_low_altitude()]
+            elif mode == "isa_high":
+                new_atm.wind_layers = [list(l) for l in wind_layers_high_altitude()]
+        sim.atmosphere = new_atm
+        sim.dynamics.atmosphere = new_atm
+        _reset()
+`;
+
+async function initPyodide() {
+  setLoadProgress(5, '正在加载 Pyodide 运行时…');
+
+  // Dynamically load Pyodide script
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+
+  setLoadProgress(15, '正在初始化 Pyodide…');
+  py = await loadPyodide({
+    indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.5/full/'
+  });
+
+  setLoadProgress(35, '正在加载 numpy…');
+  await py.loadPackage(['numpy']);
+
+  setLoadProgress(55, '正在加载仿真模块…');
+  py.FS.mkdirTree('/airship_sim');
+
+  const mods = ['__init__', 'config', 'math3d', 'added_mass', 'aero',
+                 'dynamics', 'sensors', 'controller', 'atmosphere', 'simulation'];
+  for (let i = 0; i < mods.length; i++) {
+    const mod = mods[i];
+    setLoadProgress(55 + Math.round(i / mods.length * 30), `正在加载 ${mod}.py…`);
+    const resp = await fetch(`./airship_sim/${mod}.py`);
+    if (!resp.ok) throw new Error(`Failed to fetch ${mod}.py: ${resp.status}`);
+    const code = await resp.text();
+    py.FS.writeFile(`/airship_sim/${mod}.py`, code);
+  }
+
+  setLoadProgress(88, '正在初始化仿真…');
+  await py.runPythonAsync(PYTHON_SETUP);
+
+  setLoadProgress(100, '就绪');
+  pyReady = true;
+
+  // Enable all controls
+  document.querySelectorAll('#panel button, #panel input, #panel select').forEach(el => {
+    el.disabled = false;
+  });
+
+  // Hide loading overlay
+  document.getElementById('loading').style.display = 'none';
+}
+
+// ============ 仿真循环 ============
+const MAX_TICKS_PER_FRAME = 60;  // 防止卡帧螺旋(最多 60ms 仿真/帧)
+
+function simTick(ts) {
+  requestAnimationFrame(simTick);
+
+  if (!pyReady) {
+    controls.update();
+    renderer.render(scene, camera);
+    return;
+  }
+
+  if (lastFrameTs !== null && simRunning) {
+    const elapsed = ts - lastFrameTs;
+    pendingSimMs += elapsed * simTimeScale;
+    pendingSimMs = Math.min(pendingSimMs, 100);
+    const ticks = Math.min(Math.floor(pendingSimMs), MAX_TICKS_PER_FRAME);
+    if (ticks > 0) {
+      py.globals.set('_n', ticks);
+      py.runPython('step_sim(_n)');
+      pendingSimMs -= ticks;
+    }
+  }
+  lastFrameTs = ts;
+
+  // 获取状态并更新 UI
+  const stateJson = py.runPython('get_state_json()');
+  const m = JSON.parse(stateJson);
+  simTimeScale = m.time_scale;
+  simRunning = m.running;
+  onState(m);
+
+  controls.update();
+  renderer.render(scene, camera);
+  chAlt.draw(); chYaw.draw(); chSpd.draw();
+  drawProfile();
+}
+
+function send(obj) {
+  if (!pyReady) return;
+  py.runPython(`handle_command(${JSON.stringify(JSON.stringify(obj))})`);
+  if (obj.type === 'set_atmo_mode' || obj.type === 'set_wind_layer' ||
+      obj.type === 'set_wind_preset' || obj.type === 'set_atmosphere') {
+    updateProfileData();
+  }
+}
+
+function updateProfileData() {
+  if (!pyReady) return;
+  const j = py.runPython('get_profile_json()');
+  profileData = JSON.parse(j);
+}
+
+function onState(m) {
+  const first = lastState === null;
+  if (lastState && m.t_s < lastState.t_s) {
+    clearTrail(); chAlt.clear(); chYaw.clear(); chSpd.clear();
+  }
+  lastState = m;
+
+  ship.position.fromArray(m.pos_three);
+  ship.quaternion.set(...m.quat_three_xyzw);
+  pushTrail(m.pos_three);
+  setThrust(arrowL, FWD, m.thrust_N[0]);
+  setThrust(arrowR, FWD, m.thrust_N[1]);
+  setThrust(arrowV, UP,  m.thrust_N[2]);
+  const wv = new THREE.Vector3().fromArray(m.wind_three), wl = wv.length();
+  windArrow.position.set(m.pos_three[0], m.pos_three[1]+1.2, m.pos_three[2]);
+  windArrow.visible = wl > 1e-3;
+  if (windArrow.visible) { windArrow.setDirection(wv.normalize()); windArrow.setLength(wl,.25,.12); }
+
+  chAlt.push(m.t_s, m.pid.alt.sp,   -m.pos_ned_m[2]);
+  chYaw.push(m.t_s, m.pid.yaw.sp,    m.euler_deg[2]);
+  chSpd.push(m.t_s, m.pid.speed.sp,  m.v_body_m_s[0]);
+
+  hud.textContent =
+    `t      ${m.t_s.toFixed(2)} s${m.running?'':'  [paused]'}  ×${m.time_scale}\n` +
+    `alt    ${(-m.pos_ned_m[2]).toFixed(2)} m  (sp ${m.pid.alt.sp.toFixed(2)})\n` +
+    `yaw    ${m.euler_deg[2].toFixed(1)} °  (sp ${m.pid.yaw.sp.toFixed(1)})\n` +
+    `pitch  ${m.euler_deg[1].toFixed(1)} °   roll ${m.euler_deg[0].toFixed(1)} °\n` +
+    `u      ${m.v_body_m_s[0].toFixed(2)} m/s (sp ${m.pid.speed.sp.toFixed(2)})\n` +
+    `thrust L ${m.thrust_N[0].toFixed(3)} R ${m.thrust_N[1].toFixed(3)} V ${m.thrust_N[2].toFixed(3)} N\n` +
+    `wind   ${Math.hypot(...m.wind_ned_m_s).toFixed(2)} m/s   ρ ${m.rho_kg_m3.toFixed(3)}\n` +
+    `mode   ${m.manual ? 'MANUAL' : 'AUTO'}`;
+
+  btnPause.textContent = m.running ? '暂停' : '继续';
+  btnMode.textContent = `模式: ${m.manual ? 'MANUAL' : 'AUTO'}`;
+  btnMode.classList.toggle('active', m.manual);
+  if (first) {
+    buildGainSliders(m.gains);
+    updateProfileData();
+  }
+  updateAtmoPanel(m, first);
+}
+
+// ============ 控制面板 ============
+const btnPause = document.getElementById('btnPause');
+const btnMode  = document.getElementById('btnMode');
+btnPause.onclick = () => send({type: lastState && lastState.running ? 'pause' : 'resume'});
+document.getElementById('btnStep').onclick  = () => send({type:'step'});
+document.getElementById('btnReset').onclick = () => {
+  send({type:'reset'});
+  clearTrail(); chAlt.clear(); chYaw.clear(); chSpd.clear();
+  lastState = null;
+};
+document.getElementById('selScale').onchange = e => send({type:'time_scale', value: parseFloat(e.target.value)});
+btnMode.onclick = () => send({type:'manual', enable: !(lastState && lastState.manual)});
+
+document.querySelectorAll('[data-sp]').forEach(b => b.onclick = () => {
+  const kind = b.dataset.sp;
+  if (kind === 'alt') send({type:'set_setpoints', altitude_m: parseFloat(spAlt.value)});
+  if (kind === 'yaw') send({type:'set_setpoints', yaw_deg: parseFloat(spYaw.value), pos_hold: false});
+  if (kind === 'spd') send({type:'set_setpoints', speed_m_s: parseFloat(spSpd.value), pos_hold: false});
+  if (kind === 'pos') send({type:'set_setpoints', pos_hold: spHold.checked,
+                            target_n_m: parseFloat(spN.value), target_e_m: parseFloat(spE.value)});
+});
+const spAlt = document.getElementById('spAlt'), spYaw = document.getElementById('spYaw'),
+      spSpd = document.getElementById('spSpd'), spHold = document.getElementById('spHold'),
+      spN = document.getElementById('spN'), spE = document.getElementById('spE');
+
+// 常值风
+document.getElementById('btnWind').onclick = () => {
+  send({type:'set_wind', wind_ned_m_s: [parseFloat(document.getElementById('windN').value),
+                                         parseFloat(document.getElementById('windE').value), 0]});
+};
+
+// PID 滑块
+const gainsDiv = document.getElementById('gains');
+function buildGainSliders(gains) {
+  gainsDiv.innerHTML = '';
+  for (const ch of ['alt','yaw','speed']) {
+    const h = document.createElement('div');
+    h.innerHTML = `<b style="color:#8fa1bb">${{alt:'高度',yaw:'偏航',speed:'前速'}[ch]}</b>`;
+    gainsDiv.appendChild(h);
+    for (const k of ['kp','ki','kd']) {
+      const init = gains[ch][k];
+      const max = init > 0 ? init*4 : {kp:1,ki:.1,kd:1}[k];
+      const row = document.createElement('div'); row.className = 'row';
+      row.innerHTML = `<label>${k}</label>
+        <input type="range" min="0" max="${max}" step="${max/200}" value="${init}">
+        <span class="val">${init.toPrecision(3)}</span>`;
+      const slider = row.querySelector('input'), val = row.querySelector('.val');
+      slider.oninput = () => {
+        val.textContent = parseFloat(slider.value).toPrecision(3);
+        send({type:'set_gains', channel: ch, gains: {[k]: parseFloat(slider.value)}});
+      };
+      gainsDiv.appendChild(row);
+    }
+  }
+}
+
+// ============ 手动模式键盘 ============
+const keys = {};
+const F_MAX = 0.05;
+function manualFromKeys() {
+  const fwd  = (keys['w']?1:0) - (keys['s']?1:0);
+  const turn = (keys['d']?1:0) - (keys['a']?1:0);
+  const vert = (keys['q']?1:0) - (keys['e']?1:0);
+  return {
+    left_N:  Math.max(-F_MAX, Math.min(F_MAX, (fwd + turn) * F_MAX)),
+    right_N: Math.max(-F_MAX, Math.min(F_MAX, (fwd - turn) * F_MAX)),
+    vertical_N: vert * F_MAX,
+  };
+}
+function updateManual() {
+  if (!(lastState && lastState.manual)) return;
+  send({type:'manual_cmd', ...manualFromKeys()});
+  document.getElementById('manualState').textContent =
+    Object.keys(keys).filter(k=>keys[k]).join(' ').toUpperCase();
+}
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const k = e.key.toLowerCase();
+  if ('wasdqe'.includes(k) && !keys[k]) { keys[k] = true; updateManual(); }
+});
+addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if ('wasdqe'.includes(k)) { keys[k] = false; updateManual(); }
+});
+
+// ============ 大气面板 ============
+let atmoBuilt = false, layerCount = -1;
+const atDT = document.getElementById('atDT'), atTurb = document.getElementById('atTurb');
+const reqProfile = (() => {
+  let timer = null;
+  return () => { clearTimeout(timer); timer = setTimeout(updateProfileData, 300); };
+})();
+
+atDT.oninput = () => {
+  document.getElementById('atDTv').textContent = atDT.value;
+  send({type:'set_atmosphere', dT_K: parseFloat(atDT.value)}); reqProfile();
+};
+atTurb.oninput = () => {
+  document.getElementById('atTurbv').textContent = atTurb.value;
+  send({type:'set_atmosphere', turbulence_intensity: parseFloat(atTurb.value)});
+};
+document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
+  send({type:'set_wind_preset', preset: b.dataset.preset});
+  layerCount = -1;
+  reqProfile();
+});
+document.getElementById('btnGust').onclick = () => send({type:'gust',
+  dir_deg: parseFloat(document.getElementById('gustDir').value),
+  amplitude_m_s: parseFloat(document.getElementById('gustAmp').value),
+  duration_s: parseFloat(document.getElementById('gustDur').value)});
+document.getElementById('atSolar').onchange = e => send({type:'set_solar', on: e.target.checked});
+document.getElementById('atFlux').onchange = e => send({type:'set_solar', flux_W_m2: parseFloat(e.target.value)});
+
+document.getElementById('atmoMode').onchange = e => {
+  send({type:'set_atmo_mode', mode: e.target.value});
+  atmoBuilt = false; layerCount = -1;
+  clearTrail(); chAlt.clear(); chYaw.clear(); chSpd.clear();
+  lastState = null;
+  setTimeout(updateProfileData, 100);
+};
+
+function buildWindLayerRows(layers) {
+  const div = document.getElementById('windLayers');
+  div.innerHTML = '';
+  layers.forEach((l, i) => {
+    const row = document.createElement('div'); row.className = 'row';
+    const altLabel = l[0] >= 1000 ? (l[0]/1000)+'km' : l[0]+'m';
+    row.innerHTML = `<label>${altLabel}</label>
+      速<input type="range" min="0" max="30" step="0.1" value="${l[1]}" data-k="speed">
+      <span class="val">${l[1].toFixed(1)}</span>
+      向<input type="range" min="0" max="360" step="5" value="${(l[2]+360)%360}" data-k="dir">
+      <span class="val">${Math.round((l[2]+360)%360)}°</span>`;
+    const [sSpd, sDir] = row.querySelectorAll('input');
+    const [vSpd, vDir] = row.querySelectorAll('.val');
+    sSpd.oninput = () => { vSpd.textContent = parseFloat(sSpd.value).toFixed(1);
+      send({type:'set_wind_layer', index: i, speed_m_s: parseFloat(sSpd.value)}); reqProfile(); };
+    sDir.oninput = () => { vDir.textContent = Math.round(sDir.value)+'°';
+      send({type:'set_wind_layer', index: i, dir_deg: parseFloat(sDir.value)}); reqProfile(); };
+    div.appendChild(row);
+  });
+}
+
+function updateAtmoPanel(m, first) {
+  const has = !!m.atmosphere;
+  document.getElementById('atmo').style.display = has ? '' : 'none';
+  document.getElementById('atmoNA').style.display = has ? 'none' : '';
+  if (!has) return;
+  const a = m.atmosphere;
+  if (!atmoBuilt) {
+    atDT.value = a.dT_K; document.getElementById('atDTv').textContent = a.dT_K;
+    atTurb.value = a.turbulence_intensity;
+    document.getElementById('atTurbv').textContent = a.turbulence_intensity;
+    document.getElementById('atSolar').checked = a.helium.solar_on;
+    atmoBuilt = true;
+  }
+  if (a.wind_layers.length !== layerCount) {
+    layerCount = a.wind_layers.length;
+    buildWindLayerRows(a.wind_layers);
+  }
+  document.getElementById('heInfo').textContent = a.helium.enabled
+    ? `superheat ${a.helium.superheat_K.toFixed(1)}K  m_He ${(a.helium.m_kg*1000).toFixed(1)}g`
+    : '(氦气热力学未开启)';
+}
+
+// 垂直剖面图
+const profCv = document.getElementById('chartProfile');
+function drawProfile() {
+  const ctx = profCv.getContext('2d');
+  if (profCv.width !== profCv.clientWidth*2) { profCv.width = profCv.clientWidth*2; profCv.height = profCv.clientHeight*2; }
+  const W = profCv.width, H = profCv.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!profileData) return;
+  const p = profileData;
+  const n = p.alt_m.length;
+  const altMax = Math.max(p.alt_m[n-1], 1);
+  const Y = a => H - 24 - (a/altMax) * (H-48);
+  const half = W/2 - 30;
+  const sMax = Math.max(...p.wind_speed_m_s, 1);
+  ctx.strokeStyle = '#2fb3c7'; ctx.lineWidth = 2.5; ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = 10 + p.wind_speed_m_s[i]/sMax * (half-20);
+    i ? ctx.lineTo(x, Y(p.alt_m[i])) : ctx.moveTo(x, Y(p.alt_m[i]));
+  }
+  ctx.stroke();
+  ctx.strokeStyle = '#7d8ea6'; ctx.lineWidth = 2;
+  for (let i = 0; i < n; i += 5) {
+    const x = 10 + p.wind_speed_m_s[i]/sMax * (half-20), y = Y(p.alt_m[i]);
+    const a = (p.wind_dir_deg[i]) * Math.PI/180, L = 16;
+    ctx.beginPath(); ctx.moveTo(x, y);
+    ctx.lineTo(x + L*Math.sin(a), y - L*Math.cos(a)); ctx.stroke();
+  }
+  const rMin = Math.min(...p.rho_kg_m3), rMax = Math.max(...p.rho_kg_m3);
+  const span = Math.max(rMax - rMin, 1e-6);
+  ctx.strokeStyle = '#e8923a'; ctx.lineWidth = 2.5; ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = W/2 + 10 + (p.rho_kg_m3[i]-rMin)/span * (half-20);
+    i ? ctx.lineTo(x, Y(p.alt_m[i])) : ctx.moveTo(x, Y(p.alt_m[i]));
+  }
+  ctx.stroke();
+  if (lastState && lastState.atmosphere) {
+    const y = Y(Math.min(lastState.atmosphere.alt_m, altMax));
+    ctx.strokeStyle = '#d96a3b'; ctx.setLineDash([6,6]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.font = '18px ui-monospace'; ctx.fillStyle = '#5e6b7d';
+  ctx.fillText(`wind 0~${sMax.toFixed(1)} m/s`, 10, H-6);
+  ctx.fillText(`ρ ${rMin.toFixed(3)}~${rMax.toFixed(3)}`, W/2+10, H-6);
+  ctx.fillText(`alt 0~${altMax >= 1000 ? (altMax/1000).toFixed(0)+'km' : altMax.toFixed(0)+'m'}`, 10, 20);
+}
+
+// ============ 启动 ============
+requestAnimationFrame(simTick);
+initPyodide().catch(err => {
+  document.getElementById('loadMsg').textContent = '加载失败: ' + err.message;
+  document.getElementById('loadMsg').style.color = '#c75454';
+  console.error('Pyodide init failed:', err);
+});
+</script>
+</body>
+</html>

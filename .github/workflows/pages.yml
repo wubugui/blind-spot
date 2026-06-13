@@ -1,0 +1,57 @@
+name: Deploy airship sim to GitHub Pages
+
+on:
+  push:
+    branches: [main, master, "claude/new-program-dev-bn0q6t"]
+    paths:
+      - "airship-sim/docs/**"
+      - "airship-sim/airship_sim/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site/airship_sim
+          cp airship-sim/docs/index.html _site/
+          cp airship-sim/airship_sim/__init__.py _site/airship_sim/
+          cp airship-sim/airship_sim/config.py    _site/airship_sim/
+          cp airship-sim/airship_sim/math3d.py    _site/airship_sim/
+          cp airship-sim/airship_sim/added_mass.py _site/airship_sim/
+          cp airship-sim/airship_sim/aero.py      _site/airship_sim/
+          cp airship-sim/airship_sim/dynamics.py  _site/airship_sim/
+          cp airship-sim/airship_sim/sensors.py   _site/airship_sim/
+          cp airship-sim/airship_sim/controller.py _site/airship_sim/
+          cp airship-sim/airship_sim/atmosphere.py _site/airship_sim/
+          cp airship-sim/airship_sim/simulation.py _site/airship_sim/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
