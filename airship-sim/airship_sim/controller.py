@@ -56,7 +56,12 @@ class Pid:
         if self._prev_meas is None:
             d_meas = 0.0
         else:
-            d_meas = (meas - self._prev_meas) / dt_s
+            delta = meas - self._prev_meas
+            if error_override is not None:
+                # 角度通道(偏航):按最短弧计算变化率,避免航向穿越 ±π 时
+                # 原始角度跳变 ~2π 被微分放大成假角速度、把偏航舵反向打满。
+                delta = wrap_angle_rad(delta)
+            d_meas = delta / dt_s
         self._prev_meas = meas
         alpha = dt_s / (g.tau_d_s + dt_s) if g.tau_d_s > 0 else 1.0
         self._d_filt += alpha * (d_meas - self._d_filt)
