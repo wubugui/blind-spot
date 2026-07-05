@@ -65,6 +65,7 @@
   </div>
   <div class="row">
     <button id="btnMode" disabled>模式: AUTO</button>
+    <label style="width:auto;color:#8fa1bb"><input type="checkbox" id="camFollow" checked> 镜头跟随</label>
     <span id="manualState"></span>
   </div>
   <div class="hint">手动模式按键: W/S 前进/后退, A/D 左/右转, Q/E 上升/下降(松开归零)</div>
@@ -177,6 +178,16 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 view.appendChild(renderer.domElement);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.5, 0);
+
+// 镜头跟随:让相机目标点跟住飞艇(极端环境下飞艇会漂/升出画面)。
+// 仅移动相机(渲染层),不改任何物理状态;可用面板复选框关闭。
+let camFollow = true;
+function followCamera() {
+  if (!camFollow) return;
+  const d = ship.position.clone().sub(controls.target);
+  controls.target.add(d);
+  camera.position.add(d);
+}
 
 function resize() {
   const w = view.clientWidth, h = view.clientHeight || innerHeight;
@@ -621,6 +632,7 @@ function simTick(ts) {
   simRunning = m.running;
   onState(m);
 
+  followCamera();
   controls.update();
   renderer.render(scene, camera);
   chAlt.draw(); chYaw.draw(); chSpd.draw();
@@ -696,6 +708,7 @@ document.getElementById('btnReset').onclick = () => {
 };
 document.getElementById('selScale').onchange = e => send({type:'time_scale', value: parseFloat(e.target.value)});
 btnMode.onclick = () => send({type:'manual', enable: !(lastState && lastState.manual)});
+document.getElementById('camFollow').onchange = e => { camFollow = e.target.checked; };
 
 document.querySelectorAll('[data-sp]').forEach(b => b.onclick = () => {
   const kind = b.dataset.sp;
