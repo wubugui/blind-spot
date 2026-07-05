@@ -11,7 +11,7 @@
 
 PID 实现要点:
 - 微分项作用在测量值上(derivative-on-measurement)并带一阶低通,避免设定值阶跃踢
-- 抗积分饱和:输出钗位 + 条件积分(输出饱和且误差同向时停止积分)
+- 抗积分饱和:输出钳位 + 条件积分(输出饱和且误差同向时停止积分)
 - 高度测量 10Hz 且噪声大,微分低通时间常数取 1s(见 ControlConfig)
 """
 from __future__ import annotations
@@ -56,7 +56,12 @@ class Pid:
         if self._prev_meas is None:
             d_meas = 0.0
         else:
-            d_meas = (meas - self._prev_meas) / dt_s
+            delta = meas - self._prev_meas
+            if error_override is not None:
+                # 角度通道(偏航):按最短弧计算变化率,避免航向穿越 ±π 时
+                # 原始角度跳变 ~2π 被微分放大成假角速度、把偏航舵反向打满。
+                delta = wrap_angle_rad(delta)
+            d_meas = delta / dt_s
         self._prev_meas = meas
         alpha = dt_s / (g.tau_d_s + dt_s) if g.tau_d_s > 0 else 1.0
         self._d_filt += alpha * (d_meas - self._d_filt)
@@ -153,7 +158,7 @@ class CascadeController:
             dist = float(np.hypot(dn, de))
             # 航向设定:仅当位置误差超出死区时刷新指向目标的方位角;死区内保持
             # 上一次设定不变。若每拍跟随方位角,在目标附近方位角随微小位移翻转,
-            # 航向来回急甲并积累侧向速度(常值风下实测发散)。
+            # 航向来回急甩并积累侧向速度(常值风下实测发散)。
             if self._pos_hold_yaw_sp is None:
                 self._pos_hold_yaw_sp = meas.yaw_rad
             if dist > self.cfg.pos_hold_deadband_m:
