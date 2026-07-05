@@ -178,6 +178,9 @@ class IsaAtmosphere(Atmosphere):
         self._turb_state = np.zeros(3)
         self._turb_t_s = 0.0
         self._dt_turb_s = cfg.turb_update_dt_s
+        # 可选空间结构化平均风(wind_field.WindField);None 时用分层风 wind_layers。
+        # 物理引擎经 get_state(position, time) 逐点求值,动力学代码零改动。
+        self.wind_field = None
 
     def reset(self) -> None:
         """清除湍流/阵风状态并重建 RNG,保证 reset 后轨迹与新建实例逐位一致。"""
@@ -202,39 +205,45 @@ class IsaAtmosphere(Atmosphere):
         return np.array([n, e, 0.0])
 
     # ---- 湍流 ----
-    def _turb_params(self, alt_m: float) -> tuple[float, float]:
+    def _turb_params(self, alt_m: float,
+                     local_speed_m_s: float | None = None) -> tuple[float, float]:
         prof = np.array(_TURB_PROFILE)
         sigma = float(np.interp(alt_m, prof[:, 0], prof[:, 1]))
         L = float(np.interp(alt_m, prof[:, 0], prof[:, 2]))
-        # 地面段 σ 随当地平均风加强(机械湍流):σ = max(基准, 0.1×W6m)
+        # 地面段 σ 随当地平均风加强(机械湍流):σ = max(基准, 0.1×W6m)。
+        # 有空间风场时用当地风速;否则用分层风在 6m 的值。
         if alt_m < 300.0:
-            w6 = float(np.linalg.norm(self.wind_mean_ned(6.0)))
+            w6 = (local_speed_m_s if local_speed_m_s is not None
+                  else float(np.linalg.norm(self.wind_mean_ned(6.0))))
             sigma = max(sigma, 0.1 * w6)
         return sigma * self.turbulence_intensity, L
 
-    def _advance_turbulence(self, t_s: float, alt_m: float) -> None:
+    def _advance_turbulence(self, t_s: float, alt_m: float,
+                            mean_speed_m_s: float | None = None) -> None:
         """固定步长推进 Gauss-Markov 状态;查询时间早于内部时间则保持(不回退)。"""
         while t_s >= self._turb_t_s + self._dt_turb_s:
             self._turb_t_s += self._dt_turb_s
-            sigma, L = self._turb_params(alt_m)
+            sigma, L = self._turb_params(alt_m, mean_speed_m_s)
             if sigma <= 0.0:
                 self._turb_state[:] = 0.0
                 continue
-            v_adv = max(float(np.linalg.norm(self.wind_mean_ned(alt_m))), 0.5)
+            v_adv = max(mean_speed_m_s if mean_speed_m_s is not None
+                        else float(np.linalg.norm(self.wind_mean_ned(alt_m))), 0.5)
             tau = L / v_adv
             phi = np.exp(-self._dt_turb_s / tau)
             q = sigma * np.sqrt(1.0 - phi * phi)
             self._turb_state = phi * self._turb_state + q * self._rng.standard_normal(3)
 
-    def turbulence_ned(self, alt_m: float) -> np.ndarray:
-        """当前湍流分量(风轴系 → NED)。
+    def turbulence_ned(self, alt_m: float, mean: np.ndarray | None = None) -> np.ndarray:
+        """当前湍流分量(风轴系 → NED)。mean 给定时用它定沿风轴(空间风场用)。
 
         [假设] 垂直分量 σ_w = 0.7·σ_u(近地面垂直脉动受地面抑制的典型比值)
         / 与边界层观测一致 / 强对流(热泡)环境下垂直分量可反超水平分量。
         """
         if self.turbulence_intensity <= 0.0:
             return np.zeros(3)
-        mean = self.wind_mean_ned(alt_m)
+        if mean is None:
+            mean = self.wind_mean_ned(alt_m)
         spd = float(np.hypot(mean[0], mean[1]))
         if spd > 1e-6:
             ax = mean[:2] / spd          # 沿风单位矢量
@@ -257,8 +266,17 @@ class IsaAtmosphere(Atmosphere):
     def get_state(self, position_ned_m: np.ndarray, time_s: float) -> AtmosphereState:
         alt_m = self.ground_alt_m - float(position_ned_m[2])   # z 向下
         t_K, p_Pa, rho = isa_state(alt_m, self.dT_K)
-        self._advance_turbulence(time_s, alt_m)
-        wind = self.wind_mean_ned(alt_m) + self.turbulence_ned(alt_m)
+        if self.wind_field is not None:
+            # 空间结构化风场:逐点求平均风,湍流按当地风速标定
+            height_agl_m = -float(position_ned_m[2])   # 离地高度(z=0 为放飞点地面)
+            mean = np.asarray(self.wind_field.wind_ned(
+                np.asarray(position_ned_m, dtype=float), height_agl_m, time_s),
+                dtype=float)
+            self._advance_turbulence(time_s, alt_m, float(np.hypot(mean[0], mean[1])))
+            wind = mean + self.turbulence_ned(alt_m, mean)
+        else:
+            self._advance_turbulence(time_s, alt_m)
+            wind = self.wind_mean_ned(alt_m) + self.turbulence_ned(alt_m)
         for g in self._gusts:
             wind = wind + g.wind_ned(time_s)
         return AtmosphereState(rho_kg_m3=rho, temperature_K=t_K,
