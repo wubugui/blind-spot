@@ -91,7 +91,7 @@ class FinConfig:
     enabled: bool = True
     s_plane_m2: float = 0.15      # 单平面(一对尾翼)投影总面积;约为侧投影面积的 12%
     cl_alpha_per_rad: float = 2.6  # 低展弦比升力线斜率 2π·AR/(AR+2),AR≈1.5
-    x_fin_m: float = -0.85         # 尾翼气动中心纵向位置(艙部,浮心后 0.85m)
+    x_fin_m: float = -0.85         # 尾翼气动中心纵向位置(艉部,浮心后 0.85m)
 
 
 @dataclass
@@ -105,6 +105,12 @@ class ActuatorConfig:
     # [假设] 电机可双向出力(±thrust_max),正反转推力对称
     # / 实际反转效率低 ~30% / 选定不可反转螺旋桨时需把下限改为 0
     reversible: bool = True
+    # 螺旋桨推力随空气密度缩放 T∝ρ(定转速静推力 T=C_T·ρ·n²·D⁴):高原/高空
+    # 稀薄空气里同油门推力下降。缺省开启;缩放基准 = 海平面 ISA 密度。
+    # [假设] 定油门≈定转速下 T∝ρ / 一阶正确,决定高原操纵权限与更早饱和
+    # / 桨在稀薄空气中卸载、转速略升,实际衰减略小于 ρ 比 / 需推力台实测标定
+    density_scale_thrust: bool = True
+    thrust_ref_rho_kg_m3: float = 1.225
 
 
 @dataclass
@@ -130,7 +136,7 @@ class PidGains:
     #   (如 10Hz 保持采样的气压计):避免保持跳变被微分放大、噪声经 Kp 在
     #   推力上限处单边削顶(整流)压低平均推力。控制器侧滤波,不触碰物理状态。
     i_band: float = 0.0        # 积分分离阈值:|误差| > i_band 时冻结积分(0=不启用)。
-    #   解决大阶跃期间(尤其反向饱和刹车段,条件抗饱和不拦截)积分累积导致的超调。
+    #   解决大阶跃期间(尤其反向饱和刹车段,条件抗饱和不拦截)积分累积导致的超调
     out_min: float = -1.0
     out_max: float = 1.0
 
@@ -169,7 +175,7 @@ class ControlConfig:
     pos_hold_kp_1_s: float = 0.15
     pos_hold_max_speed_m_s: float = 0.5
     pos_hold_deadband_m: float = 0.5    # 死区:侧向(欠驱动方向)漂移小于该值时不调头修正。
-    #   死区过小(实测0.15m)会在常值风下触发周期性大角度调头→横对风→被吹离
+    #   死区过小(实测 0.15m)会在常值风下触发周期性大角度调头→横对风→被吹离
     pos_hold_yaw_rate_max_rad_s: float = 0.2   # 航向设定速率限制(≈11°/s):
     #   方位角跳变(死区边界、近距离掠过目标)不直接进入偏航环,缓慢蟹行修正侧向误差
 
@@ -198,6 +204,10 @@ class AtmosphereConfig:
     wind_layers: tuple = ()              # ((alt_m, speed_m_s, dir_to_deg), ...) 按高度升序
     turbulence_intensity: float = 0.0    # 湍流强度倍率:0=关,1=标准(σ剖面见 atmosphere.py)
     turb_update_dt_s: float = 0.01       # 湍流状态更新步长(100Hz)
+    # 声明式空间风场规格(见 wind_field.build_wind_field);None 时用 wind_layers。
+    # 例:{"kind":"glacier_katabatic","params":{"peak_speed_m_s":4,"jet_height_m":6}}
+    # 设置后覆盖 wind_layers,由 IsaAtmosphere 逐点(位置/时间)求值,可 JSON 往返。
+    wind_field: dict = None
 
 
 @dataclass
