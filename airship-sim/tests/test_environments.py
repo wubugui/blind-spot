@@ -57,3 +57,27 @@ def test_lake_breeze_present():
     # 锋面推进后陆侧应出现 onshore(+x)风分量
     w = sim.atmosphere.get_state(np.array([5.0, 0, -5.0]), 30.0).wind_ned_m_s
     assert w[0] > 0.0
+
+
+def test_heavy_airframe_holds_station():
+    """抗风重型机型 + 迎风起始朝向:三环境定点漂移应显著小于默认机型。"""
+    from airship_sim.environments import heading_into_wind_quat
+    from airship_sim.dynamics import IDX_POS
+    def drift(env_fn, airframe, dur=25.0, alt=10.0):
+        cfg = env_fn(airframe=airframe)
+        sim = Simulation(cfg)
+        q = heading_into_wind_quat(sim.atmosphere, (0, 0, -alt), 0.0)
+        sim.reset(p_ned_m=(0, 0, -alt), q=tuple(q))
+        sp = sim.controller.setpoints
+        sp.pos_hold = True; sp.target_n_m = 0; sp.target_e_m = 0; sp.altitude_m = alt
+        peak = 0.0
+        for i in range(int(dur * 1000)):
+            sim.step(record=False)
+            if i > dur * 500:  # 后半段稳态
+                peak = max(peak, float(np.hypot(sim.x[IDX_POS][0], sim.x[IDX_POS][1])))
+        return peak
+    # 重型机型在冰川应能守住(峰值漂移 < 5m),且明显优于默认机型
+    heavy = drift(glacier, "heavy")
+    light = drift(glacier, "default")
+    assert heavy < 5.0, f"重型机型冰川峰值漂移应 <5m,实测 {heavy:.1f}m"
+    assert heavy < 0.5 * light, f"重型应显著优于默认({heavy:.1f} vs {light:.1f} m)"

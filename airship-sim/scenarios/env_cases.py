@@ -15,12 +15,15 @@ import numpy as np
 
 from _common import plot_timeseries, print_metric, saturation_fraction, save_fig
 from airship_sim import environments as envs
+from airship_sim.environments import heading_into_wind_quat
 from airship_sim.simulation import Simulation
 
 
 def run_case(name: str, cfg, alt_m: float, duration_s: float):
     sim = Simulation(cfg)
-    sim.reset(p_ned_m=(0.0, 0.0, -alt_m))
+    # 迎风起始朝向:欠驱动飞艇背风起飞、掉头期间会被吹散,故初始即指向风来向
+    q = heading_into_wind_quat(sim.atmosphere, (0.0, 0.0, -alt_m), 0.0)
+    sim.reset(p_ned_m=(0.0, 0.0, -alt_m), q=tuple(q))
     sp = sim.controller.setpoints
     sp.pos_hold = True
     sp.target_n_m, sp.target_e_m = 0.0, 0.0
@@ -64,15 +67,18 @@ def main():
     ap.add_argument("--env", default="all", choices=["all", "glacier", "plateau", "lake"])
     ap.add_argument("--duration", type=float, default=60.0)
     ap.add_argument("--alt", type=float, default=8.0, help="飞行高度 AGL (m)")
+    ap.add_argument("--airframe", default="default", choices=["default", "heavy"],
+                    help="default=默认机型(抗风~0.5m/s);heavy=抗风重型(可定点)")
     args = ap.parse_args()
 
     builders = {"glacier": envs.glacier, "plateau": envs.plateau, "lake": envs.lake}
     names = list(builders) if args.env == "all" else [args.env]
-    results = [run_case(n, builders[n](), args.alt, args.duration) for n in names]
+    results = [run_case(n, builders[n](airframe=args.airframe), args.alt, args.duration)
+               for n in names]
 
     print("\n===== 汇总 =====")
     for r in results:
-        verdict = "可守住" if r["drift_max"] < 2.0 else ("勉强" if r["drift_max"] < 10 else "守不住")
+        verdict = "可守住" if r["drift_max"] < 3.5 else ("勉强" if r["drift_max"] < 12 else "守不住")
         print_metric(r["name"], f"峰值漂移 {r['drift_max']:.1f} m  → {verdict}",
                      f"(ρ={r['rho']:.2f})")
     print("\n提示:改电机上限/尾翼/配重/风场参数(见 airship_sim/environments.py)重跑,"

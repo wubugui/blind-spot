@@ -106,8 +106,10 @@
       <input type="range" id="envWind" min="0" max="10" step="0.5" value="4"><span class="val" id="envWindv">4</span></div>
     <div class="row"><label>下坡向°</label>
       <input type="range" id="envDir" min="0" max="360" step="10" value="180"><span class="val" id="envDirv">180</span></div>
+    <div class="row"><label>机型</label>
+      <label style="width:auto;color:#8fa1bb"><input type="checkbox" id="envHeavy" checked> 抗风重型(可定点)</label></div>
     <div class="row"><label>飞行高度 m</label>
-      <input type="number" id="envFlyAlt" value="8" step="1" style="width:52px">
+      <input type="number" id="envFlyAlt" value="10" step="1" style="width:52px">
       <button id="btnEnvApply">应用环境</button></div>
     <div id="envInfo" class="hint"></div>
   </div>
@@ -537,19 +539,27 @@ def handle_command(json_str):
             wind = float(msg.get("peak_m_s", 4.0))
             ddeg = float(msg.get("downhill_deg", 180.0))
             fly = float(msg.get("fly_alt_m", 8.0))
+            af = msg.get("airframe", "default")
             if name == "glacier":
                 cfg = envs.glacier(ground_alt_m=alt, air_temp_C=temp,
-                    downhill_azimuth_deg=ddeg, katabatic_peak_m_s=wind, jet_height_m=6.0)
+                    downhill_azimuth_deg=ddeg, katabatic_peak_m_s=wind, jet_height_m=6.0,
+                    airframe=af)
             elif name == "plateau":
                 cfg = envs.plateau(ground_alt_m=alt, air_temp_C=temp,
                     downhill_azimuth_deg=ddeg, slope_peak_m_s=wind, jet_height_m=10.0,
-                    daytime=True, thermals=True)
+                    daytime=True, thermals=True, airframe=af)
             elif name == "lake":
                 cfg = envs.lake(ground_alt_m=alt, air_temp_C=(None if temp==0 else temp),
-                    onshore_dir_deg=ddeg, surface_wind_m_s=wind, lake_breeze=True)
+                    onshore_dir_deg=ddeg, surface_wind_m_s=wind, lake_breeze=True,
+                    airframe=af)
             _init_pos = [0.0, 0.0, -fly]
             sim = Simulation(cfg)
-            _reset()
+            # 迎风起始朝向:欠驱动飞艇背风起飞会被吹散
+            _q = envs.heading_into_wind_quat(sim.atmosphere, (0.0, 0.0, -fly), 0.0)
+            sim.reset(p_ned_m=tuple(_init_pos), q=tuple(_q))
+            _sp = sim.controller.setpoints
+            _sp.altitude_m = fly; _sp.pos_hold = True
+            _sp.target_n_m = 0.0; _sp.target_e_m = 0.0
 `;
 
 async function initPyodide() {
@@ -825,9 +835,9 @@ const envWind = document.getElementById('envWind'), envDir = document.getElement
 envWind.oninput = () => document.getElementById('envWindv').textContent = envWind.value;
 envDir.oninput  = () => document.getElementById('envDirv').textContent = envDir.value;
 const envDefaults = {
-  glacier: {alt:4000, temp:-10, wind:4, dir:180, fly:8},
-  plateau: {alt:4500, temp:5,  wind:3, dir:180, fly:8},
-  lake:    {alt:0,    temp:0,  wind:3, dir:0,   fly:8},
+  glacier: {alt:4000, temp:-10, wind:4, dir:180, fly:10},
+  plateau: {alt:4500, temp:5,  wind:3, dir:180, fly:10},
+  lake:    {alt:0,    temp:0,  wind:3, dir:0,   fly:10},
 };
 function applyEnv() {
   const name = envMode.value;
@@ -836,13 +846,17 @@ function applyEnv() {
     air_temp_C: parseFloat(document.getElementById('envTemp').value),
     peak_m_s: parseFloat(envWind.value),
     downhill_deg: parseFloat(envDir.value),
-    fly_alt_m: parseFloat(document.getElementById('envFlyAlt').value)});
+    fly_alt_m: parseFloat(document.getElementById('envFlyAlt').value),
+    airframe: document.getElementById('envHeavy').checked ? 'heavy' : 'default'});
   atmoBuilt = false; layerCount = -1;
   clearTrail(); chAlt.clear(); chYaw.clear(); chSpd.clear();
   lastState = null;
   setTimeout(updateProfileData, 120);
+  const heavy = document.getElementById('envHeavy').checked;
   document.getElementById('envInfo').textContent = name === 'none' ? ''
-    : '已按当地密度重新配平;推力随密度缩放。改参数后点"应用环境"重建。';
+    : (heavy ? '抗风重型机型 + 迎风起始朝向:可在此环境定点(漂移~1~3m)。'
+             : '默认机型(~0.5m/s 抗风):会被吹走——取消勾选是对照。')
+    + ' 已按当地密度配平、推力随密度缩放。';
 }
 envMode.onchange = () => {
   const name = envMode.value;
