@@ -471,7 +471,7 @@ def handle_command(json_str):
         if mode == "constant":
             new_atm = ConstantAtmosphere(sim.cfg.atmosphere)
         else:
-            new_cfg_atm = AtmosphereConfig(mode="isa", ground_alt_m=0.0)
+            new_cfg_atm = AtmosphereConfig(model="isa", ground_alt_m=0.0)
             new_atm = make_atmosphere(new_cfg_atm, seed=cfg.seed + 1)
             if mode == "isa_low":
                 new_atm.wind_layers = [list(l) for l in wind_layers_low_altitude()]
