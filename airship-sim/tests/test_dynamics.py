@@ -135,3 +135,39 @@ def test_fin_adds_yaw_damping():
     aero_bare = AeroModel(cfg.hull, cfg.aero, cfg.fins)
     _, m_bare = aero_bare.forces_moments(nu_r, rho_kg_m3=1.225)
     assert m[2] < m_bare[2] < 0.0   # 尾翼显著增强偏航阻尼
+
+
+def test_thrust_scales_with_air_density():
+    """螺旋桨推力 T∝ρ:同一执行器状态产生的推力(力,非加速度)按 ρ/ρ_ref 缩放。
+
+    z 平动等效质量 m_eff_z = m + ρ·k2·V 无转动耦合(r_g 沿 z),故 F_z = m_eff_z·Δa_z
+    可精确反解,隔离掉附加质量随密度的变化(否则加速度比里混入附加质量效应)。
+    """
+    import numpy as np
+    from airship_sim.config import AtmosphereConfig, default_config
+    from airship_sim.atmosphere import IsaAtmosphere, isa_state
+    from airship_sim.dynamics import AirshipDynamics, IDX_POS, IDX_VEL, IDX_THRUST
+
+    def thrust_force(alt_m, scale_on):
+        cfg = default_config(0.005)
+        cfg.actuator.density_scale_thrust = scale_on
+        cfg.atmosphere = AtmosphereConfig(model="isa", ground_alt_m=alt_m)
+        dyn = AirshipDynamics(cfg, IsaAtmosphere(cfg.atmosphere))
+        x0 = dyn.initial_state((0, 0, -5.0))
+        rho = dyn.atmosphere.get_state(x0[IDX_POS], 0.0).rho_kg_m3
+        a_no = dyn.derivatives(x0, np.zeros(3), 0.0)[IDX_VEL][2]
+        xt = x0.copy(); xt[IDX_THRUST] = [0.0, 0.0, 0.05]     # 垂直电机满推(向上=-z)
+        a_th = dyn.derivatives(xt, np.zeros(3), 0.0)[IDX_VEL][2]
+        m_eff_z = dyn.props.M_RB[2, 2] + rho * dyn.props.M_A_unit_rho[2, 2]
+        return -m_eff_z * (a_th - a_no), rho                   # 向上推力(N), 当地密度
+
+    f0, r0 = thrust_force(0.0, True)
+    f45, r45 = thrust_force(4500.0, True)
+    assert abs(f0 - 0.05 * r0 / 1.225) < 1e-6                  # F = 0.05·ρ/ρ_ref
+    assert abs(f45 / f0 - r45 / r0) < 1e-3, f"力应∝ρ,实测 {f45/f0:.4f} vs {r45/r0:.4f}"
+    assert f45 < f0                                            # 高原推力更小
+
+    # 关闭缩放:推力与密度无关,恒为满推
+    foff0, _ = thrust_force(0.0, False)
+    foff45, _ = thrust_force(4500.0, False)
+    assert abs(foff0 - 0.05) < 1e-5 and abs(foff45 - 0.05) < 1e-5

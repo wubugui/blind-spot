@@ -135,6 +135,8 @@ class AirshipDynamics:
         self._thrust_min_N = -act.thrust_max_N if act.reversible else 0.0
         self._thrust_max_N = act.thrust_max_N
         self._tau_s = act.tau_s
+        self._density_scale_thrust = act.density_scale_thrust
+        self._thrust_ref_rho = act.thrust_ref_rho_kg_m3
         self._volume_m3 = cfg.hull.volume_m3
         self._minv_rho_key: float | None = None
         self._minv: np.ndarray | None = None
@@ -191,11 +193,15 @@ class AirshipDynamics:
         # 浮力(作用在浮心,当地密度实时计算)
         f_buoy_b = R.T @ np.array([0.0, 0.0, -rho * self._volume_m3 * GRAVITY_M_S2])
         tau[0:3] += f_buoy_b
-        # 推力:左右电机沿 +x,垂直电机推力为正时沿 -z(向上)
+        # 推力:左右电机沿 +x,垂直电机推力为正时沿 -z(向上)。
+        # 螺旋桨推力随当地空气密度缩放 T∝ρ(见 ActuatorConfig):高原稀薄空气推力下降。
+        thr = thrust_N
+        if self._density_scale_thrust:
+            thr = thrust_N * (rho / self._thrust_ref_rho)
         f_motors_b = np.array([
-            [thrust_N[0], 0.0, 0.0],
-            [thrust_N[1], 0.0, 0.0],
-            [0.0, 0.0, -thrust_N[2]],
+            [thr[0], 0.0, 0.0],
+            [thr[1], 0.0, 0.0],
+            [0.0, 0.0, -thr[2]],
         ])
         for r_m, f_m in zip(self._r_motors, f_motors_b):
             tau[0:3] += f_m

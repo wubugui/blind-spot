@@ -26,7 +26,8 @@ OUT = HERE / "index.html"
 # 加载顺序即模块依赖顺序(与模板里的 mods 数组一致)
 MODULES = [
     "__init__", "config", "math3d", "added_mass", "aero",
-    "dynamics", "sensors", "controller", "atmosphere", "simulation",
+    "dynamics", "sensors", "controller", "atmosphere", "wind_field",
+    "simulation", "environments",
 ]
 
 # fetch 版加载片段(模板中的原文),整段替换为内联读取

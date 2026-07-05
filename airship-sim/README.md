@@ -81,12 +81,40 @@ airship_sim/          物理引擎与服务(模块化,互相独立可替换)
   sensors.py          IMU/气压计噪声模型
   controller.py       串级 PID + 位置保持外环
   atmosphere.py       统一接口 get_state(pos,t)→密度/温压/风;ISA/风层/湍流/阵风
+  wind_field.py       空间结构化风场:Prandtl 坡风/对数边界层/湖陆风锋面/热泡/山脊地形/查表
+  environments.py     极端环境预设:冰川/高原/湖泊(密度配平+空间风场+太阳负荷一键配好)
   simulation.py       主循环(1ms 物理,50Hz 控制,整数 tick 调度) + 氦气热模型
   server.py           WebSocket 50Hz 广播 + 指令 + NED→Three.js 协议层转换
 web/index.html        单文件 Three.js 前端(纯渲染)
-scenarios/            可直接运行的验证场景
-tests/                56 个单元/集成测试
+scenarios/            可直接运行的验证场景(含 env_cases.py 三环境 case 跑批)
+tests/                77 个单元/集成测试
 ```
+
+## 极端环境与空间风场(低空 2~50m)
+
+物理引擎按位置/时间逐点取风,因此空间风场无需改动力学。`environments.py` 一键配好:
+
+```python
+from airship_sim.environments import glacier, plateau, lake
+from airship_sim.simulation import Simulation
+cfg = glacier(ground_alt_m=4000, air_temp_C=-12, katabatic_peak_m_s=4, jet_height_m=6)
+sim = Simulation(cfg)           # 密度已按 4000m 配平,推力随密度缩放,挂上下降风急流
+```
+
+或跑批:`python scenarios/env_cases.py`(冰川/高原/湖泊定点抗风,出漂移/饱和指标+PNG)。
+
+| 环境 | 主导物理(已建模) |
+| --- | --- |
+| 冰川 | 低温高密度 + **Prandtl 下降风急流**(低空 jet,峰在 πλ/4)+ 冰面反照太阳负荷 |
+| 高原 | **低密度**(浮力↓、气动↓、**螺旋桨推力 T∝ρ ↓**)+ 上坡风/**热泡上升气流** + 强日照超温 |
+| 湖泊 | 水面低粗糙度对数层 + **湖陆风推进锋面**(辐合+上升) |
+
+风场模型(`wind_field.py`,均带 `[假设]` 声明,可 `CompositeWind` 叠加、JSON 声明式构建):
+Prandtl 坡风(含沿坡 fetch 增强)、对数边界层(z0 随下垫面)、湖陆风锋面、对流热泡阵列、
+山脊加速+背风回流、高度-风廓线查表(接入实测探空/ERA5)。网页端"极端环境"面板可交互切换。
+
+> **准确性提示**:以上均为解析/运动学参数化,抓住对低空飞行最相关的一阶结构,便于快速验证
+> case;定量任务须用实测(风洞/推力台/探空/飞行辨识)标定参数——见接口下文。
 
 ## 时序与可复现性
 

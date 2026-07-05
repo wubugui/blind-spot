@@ -87,6 +87,30 @@
   <div id="gains"></div>
   <div class="hint">输出限幅/滤波等高级参数见 config.py</div>
 
+  <h3>极端环境(空间风场 + 密度配平)</h3>
+  <div class="row">
+    <label>环境</label>
+    <select id="envMode" disabled>
+      <option value="none">无(用下方大气模式)</option>
+      <option value="glacier">冰川(下降风急流)</option>
+      <option value="plateau">高原(低密度+上坡风/热泡)</option>
+      <option value="lake">湖泊(湖陆风锋面)</option>
+    </select>
+  </div>
+  <div id="envParams" style="display:none">
+    <div class="row"><label>海拔 m</label>
+      <input type="number" id="envAlt" value="4000" step="100" style="width:66px">
+      气温°C<input type="number" id="envTemp" value="-10" step="1" style="width:52px"></div>
+    <div class="row"><label>风峰 m/s</label>
+      <input type="range" id="envWind" min="0" max="10" step="0.5" value="4"><span class="val" id="envWindv">4</span></div>
+    <div class="row"><label>下坡向°</label>
+      <input type="range" id="envDir" min="0" max="360" step="10" value="180"><span class="val" id="envDirv">180</span></div>
+    <div class="row"><label>飞行高度 m</label>
+      <input type="number" id="envFlyAlt" value="8" step="1" style="width:52px">
+      <button id="btnEnvApply">应用环境</button></div>
+    <div id="envInfo" class="hint"></div>
+  </div>
+
   <h3>大气</h3>
   <div class="row">
     <label>模式</label>
@@ -292,17 +316,20 @@ from airship_sim.dynamics import IDX_POS, IDX_QUAT, IDX_VEL, IDX_OMEGA, IDX_THRU
 from airship_sim.math3d import quat_to_euler
 from airship_sim.atmosphere import (IsaAtmosphere, ConstantAtmosphere, make_atmosphere,
     wind_layers_low_altitude, wind_layers_high_altitude, isa_state)
+from airship_sim import environments as envs
+from airship_sim.wind_field import build_wind_field
 
 _INIT_POS = (0.0, 0.0, -1.5)
+_init_pos = list(_INIT_POS)     # 环境模式下按飞行高度改写
 cfg = default_config(heaviness_kg=0.005)
 sim = Simulation(cfg)
 _running = True
 _time_scale = 1.0
 
 def _reset():
-    sim.reset(p_ned_m=_INIT_POS)
+    sim.reset(p_ned_m=tuple(_init_pos))
     sp = sim.controller.setpoints
-    sp.altitude_m = 1.5
+    sp.altitude_m = -_init_pos[2]
     sp.pos_hold = True
     sp.target_n_m = 0.0
     sp.target_e_m = 0.0
@@ -381,13 +408,19 @@ def get_state_json():
 def get_profile_json():
     atm = sim.atmosphere
     if isinstance(atm, IsaAtmosphere):
-        top = max((l[0] for l in atm.wind_layers), default=100.0)
-        top = max(top, 50.0)
-        alts = np.linspace(0.0, top, 41)
-        wind = [atm.wind_mean_ned(a) for a in alts]
+        wf = getattr(atm, "wind_field", None)
+        if wf is not None:
+            # 空间风场:在放飞点水平位置、按离地高度 AGL 采样(低空重点看 0~50m)
+            alts = np.linspace(0.0, 50.0, 41)
+            wind = [wf.wind_ned(np.array([0.0, 0.0, -a]), a, sim.t_s) for a in alts]
+        else:
+            top = max((l[0] for l in atm.wind_layers), default=100.0)
+            top = max(top, 50.0)
+            alts = np.linspace(0.0, top, 41)
+            wind = [atm.wind_mean_ned(a) for a in alts]
         spd = [float(np.hypot(w[0], w[1])) for w in wind]
         ddeg = [float(np.rad2deg(np.arctan2(w[1], w[0]))) for w in wind]
-        rho = [isa_state(a, atm.dT_K)[2] for a in alts]
+        rho = [isa_state(atm.ground_alt_m + a, atm.dT_K)[2] for a in alts]
     else:
         alts, spd, ddeg = [0.0, 100.0], [0.0, 0.0], [0.0, 0.0]
         rho = [sim.cfg.atmosphere.rho_const_kg_m3] * 2
@@ -398,7 +431,7 @@ def get_profile_json():
                        "rho_kg_m3": [float(r) for r in rho]})
 
 def handle_command(json_str):
-    global _running, _time_scale
+    global _running, _time_scale, sim, cfg, _init_pos
     msg = json.loads(json_str)
     t = msg.get("type")
     if t == "pause":
@@ -480,6 +513,32 @@ def handle_command(json_str):
         sim.atmosphere = new_atm
         sim.dynamics.atmosphere = new_atm
         _reset()
+    elif t == "set_environment":
+        name = msg["name"]
+        if name == "none":
+            _init_pos = [0.0, 0.0, -1.5]
+            cfg = default_config(heaviness_kg=0.005)
+            sim = Simulation(cfg)
+            _reset()
+        else:
+            alt = float(msg.get("ground_alt_m", 4000.0))
+            temp = float(msg.get("air_temp_C", -10.0))
+            wind = float(msg.get("peak_m_s", 4.0))
+            ddeg = float(msg.get("downhill_deg", 180.0))
+            fly = float(msg.get("fly_alt_m", 8.0))
+            if name == "glacier":
+                cfg = envs.glacier(ground_alt_m=alt, air_temp_C=temp,
+                    downhill_azimuth_deg=ddeg, katabatic_peak_m_s=wind, jet_height_m=6.0)
+            elif name == "plateau":
+                cfg = envs.plateau(ground_alt_m=alt, air_temp_C=temp,
+                    downhill_azimuth_deg=ddeg, slope_peak_m_s=wind, jet_height_m=10.0,
+                    daytime=True, thermals=True)
+            elif name == "lake":
+                cfg = envs.lake(ground_alt_m=alt, air_temp_C=(None if temp==0 else temp),
+                    onshore_dir_deg=ddeg, surface_wind_m_s=wind, lake_breeze=True)
+            _init_pos = [0.0, 0.0, -fly]
+            sim = Simulation(cfg)
+            _reset()
 `;
 
 async function initPyodide() {
@@ -505,7 +564,8 @@ async function initPyodide() {
   py.FS.mkdirTree('/airship_sim');
 
   const mods = ['__init__', 'config', 'math3d', 'added_mass', 'aero',
-                 'dynamics', 'sensors', 'controller', 'atmosphere', 'simulation'];
+                 'dynamics', 'sensors', 'controller', 'atmosphere', 'wind_field',
+                 'simulation', 'environments'];
   for (let i = 0; i < mods.length; i++) {
     const mod = mods[i];
     setLoadProgress(55 + Math.round(i / mods.length * 30), `正在加载 ${mod}.py…`);
@@ -745,6 +805,46 @@ document.getElementById('atmoMode').onchange = e => {
   lastState = null;
   setTimeout(updateProfileData, 100);
 };
+
+// ---- 极端环境 ----
+const envMode = document.getElementById('envMode');
+const envWind = document.getElementById('envWind'), envDir = document.getElementById('envDir');
+envWind.oninput = () => document.getElementById('envWindv').textContent = envWind.value;
+envDir.oninput  = () => document.getElementById('envDirv').textContent = envDir.value;
+const envDefaults = {
+  glacier: {alt:4000, temp:-10, wind:4, dir:180, fly:8},
+  plateau: {alt:4500, temp:5,  wind:3, dir:180, fly:8},
+  lake:    {alt:0,    temp:0,  wind:3, dir:0,   fly:8},
+};
+function applyEnv() {
+  const name = envMode.value;
+  send({type:'set_environment', name,
+    ground_alt_m: parseFloat(document.getElementById('envAlt').value),
+    air_temp_C: parseFloat(document.getElementById('envTemp').value),
+    peak_m_s: parseFloat(envWind.value),
+    downhill_deg: parseFloat(envDir.value),
+    fly_alt_m: parseFloat(document.getElementById('envFlyAlt').value)});
+  atmoBuilt = false; layerCount = -1;
+  clearTrail(); chAlt.clear(); chYaw.clear(); chSpd.clear();
+  lastState = null;
+  setTimeout(updateProfileData, 120);
+  document.getElementById('envInfo').textContent = name === 'none' ? ''
+    : '已按当地密度重新配平;推力随密度缩放。改参数后点"应用环境"重建。';
+}
+envMode.onchange = () => {
+  const name = envMode.value;
+  document.getElementById('envParams').style.display = name === 'none' ? 'none' : '';
+  if (name !== 'none') {
+    const d = envDefaults[name];
+    document.getElementById('envAlt').value = d.alt;
+    document.getElementById('envTemp').value = d.temp;
+    envWind.value = d.wind; document.getElementById('envWindv').textContent = d.wind;
+    envDir.value = d.dir;   document.getElementById('envDirv').textContent = d.dir;
+    document.getElementById('envFlyAlt').value = d.fly;
+  }
+  applyEnv();
+};
+document.getElementById('btnEnvApply').onclick = applyEnv;
 
 function buildWindLayerRows(layers) {
   const div = document.getElementById('windLayers');

@@ -329,9 +329,17 @@ def wind_layers_high_altitude() -> tuple:
 
 
 def make_atmosphere(cfg: AtmosphereConfig, seed: int = 0) -> Atmosphere:
-    """根据配置构建大气模型。seed 用于湍流(可复现,由 SimConfig.seed 派生)。"""
+    """根据配置构建大气模型。seed 用于湍流(可复现,由 SimConfig.seed 派生)。
+
+    cfg.wind_field 非空时构建声明式空间风场并挂到 IsaAtmosphere(覆盖 wind_layers)。
+    """
     if cfg.model == "constant":
         return ConstantAtmosphere(cfg)
     if cfg.model == "isa":
-        return IsaAtmosphere(cfg, seed)
+        atm = IsaAtmosphere(cfg, seed)
+        spec = getattr(cfg, "wind_field", None)
+        if spec is not None:
+            from .wind_field import build_wind_field
+            atm.wind_field = build_wind_field(spec)
+        return atm
     raise ValueError(f"unknown atmosphere model: {cfg.model}")

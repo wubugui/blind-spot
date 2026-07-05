@@ -105,6 +105,12 @@ class ActuatorConfig:
     # [假设] 电机可双向出力(±thrust_max),正反转推力对称
     # / 实际反转效率低 ~30% / 选定不可反转螺旋桨时需把下限改为 0
     reversible: bool = True
+    # 螺旋桨推力随空气密度缩放 T∝ρ(定转速静推力 T=C_T·ρ·n²·D⁴):高原/高空
+    # 稀薄空气里同油门推力下降。缺省开启;缩放基准 = 海平面 ISA 密度。
+    # [假设] 定油门≈定转速下 T∝ρ / 一阶正确,决定高原操纵权限与更早饱和
+    # / 桨在稀薄空气中卸载、转速略升,实际衰减略小于 ρ 比 / 需推力台实测标定
+    density_scale_thrust: bool = True
+    thrust_ref_rho_kg_m3: float = 1.225
 
 
 @dataclass
@@ -198,6 +204,10 @@ class AtmosphereConfig:
     wind_layers: tuple = ()              # ((alt_m, speed_m_s, dir_to_deg), ...) 按高度升序
     turbulence_intensity: float = 0.0    # 湍流强度倍率:0=关,1=标准(σ剖面见 atmosphere.py)
     turb_update_dt_s: float = 0.01       # 湍流状态更新步长(100Hz)
+    # 声明式空间风场规格(见 wind_field.build_wind_field);None 时用 wind_layers。
+    # 例:{"kind":"glacier_katabatic","params":{"peak_speed_m_s":4,"jet_height_m":6}}
+    # 设置后覆盖 wind_layers,由 IsaAtmosphere 逐点(位置/时间)求值,可 JSON 往返。
+    wind_field: dict = None
 
 
 @dataclass
