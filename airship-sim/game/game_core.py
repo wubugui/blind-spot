@@ -185,6 +185,16 @@ class Leg:
                     need = ha + clearance
                     if sp.altitude_m < need:
                         sp.altitude_m = min(sp.altitude_m + 2.0, need)
+                    # 进场模式:接近目的地时允许把高度设定"降"下来(平时只升不降;
+                    # 到站判定需要 AGL<60,不降的话船会悬在站顶傻等——实测 4 条
+                    # 航线因此超时)。下降坡度限制在安全余量内。
+                    dist_dest = float(np.hypot(*(self.dest - p[0:2])))
+                    if dist_dest < 1200.0:
+                        h_dest = self.terrain.height_m(float(self.dest[0]),
+                                                       float(self.dest[1]))
+                        approach = max(h_dest + 40.0, hn + 30.0, ha + 25.0)
+                        if sp.altitude_m > approach:
+                            sp.altitude_m = max(sp.altitude_m - 1.5, approach)
                     agl = -float(p[2]) - hn
                     # 爬升能力随状态估计:浮力盈余给"免费爬升",侧滑(蟹行)
                     # 经横流耦合放大垂直阻力、把爬升能力砍到 1/3(真实物理,
