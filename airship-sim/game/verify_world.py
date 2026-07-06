@@ -19,15 +19,15 @@ import game_core as gc
 SHIPS = {
     "base": {"envelope": {"len_m": 25, "dia_m": 8, "skin_kg": 128},
              "fins": {"s_m2": 30, "mass_kg": 55},
-             "motor": {"t_max_N": 300, "mass_kg": 110, "disc_m2": 4.5},
+             "motor": {"t_max_N": 250, "mass_kg": 60, "disc_m2": 4.5},
              "battery": {"wh": 20000, "mass_kg": 100}},
     "mid":  {"envelope": {"len_m": 30, "dia_m": 9.6, "skin_kg": 200},
              "fins": {"s_m2": 48, "mass_kg": 95},
-             "motor": {"t_max_N": 450, "mass_kg": 160, "disc_m2": 5.7},
+             "motor": {"t_max_N": 750, "mass_kg": 170, "disc_m2": 8.0},
              "battery": {"wh": 20000, "mass_kg": 100}},
     "top":  {"envelope": {"len_m": 35, "dia_m": 11.2, "skin_kg": 290},
              "fins": {"s_m2": 48, "mass_kg": 95},
-             "motor": {"t_max_N": 450, "mass_kg": 160, "disc_m2": 5.7},
+             "motor": {"t_max_N": 750, "mass_kg": 170, "disc_m2": 8.0},
              "battery": {"wh": 30000, "mass_kg": 150}},
 }
 
@@ -63,7 +63,7 @@ def fly(from_id: str, to_id: str, slot: int, verbose: bool = False) -> dict:
                       "fly_alt_agl_m": 40},
             "seed": 11}
     gc.start_leg(json.dumps(spec))
-    gc.leg_command(json.dumps({"type": "cruise", "on": True, "speed": 8.0}))
+    gc.leg_command(json.dumps({"type": "cruise", "on": True, "speed": 10.0}))
     cap_s = leg["dist"] / 3.5 + 520.0 + abs(d_alt) * 0.8
     st = None
     t0 = time.time()
@@ -105,6 +105,7 @@ def main():
                            if W["stations"][l["b"]]["alt"] >= W["stations"][l["a"]]["alt"]
                            else (l["b"], l["a"]))
             runs.append(up)
+        # 山脊航段按其设计风窗(黎明)验证——正午是玩家该避开的时段(预报有提示)
         # 关键回程(大下坡):高原下撤 + 冰川顺急流
         runs.append(("shidian", "yunti"))
         runs.append(("jiguang", "bingshe"))

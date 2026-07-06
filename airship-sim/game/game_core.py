@@ -152,11 +152,11 @@ class Leg:
                 # 航向设定回转限速 0.12 rad/s(10Hz × 0.012)
                 err = wrap_angle_rad(self.yaw_target - sp.yaw_rad)
                 sp.yaw_rad = wrap_angle_rad(
-                    sp.yaw_rad + float(np.clip(err, -0.012, 0.012)))
+                    sp.yaw_rad + float(np.clip(err, -0.02, 0.02)))
                 # 转弯协调:按真实航向误差收油(0.6 rad 以上完全收油)
                 yaw_now = quat_to_euler(self.sim.x[IDX_QUAT])[2]
                 yaw_err = abs(wrap_angle_rad(self.yaw_target - yaw_now))
-                factor = float(np.clip(1.0 - yaw_err / 0.6, 0.0, 1.0))
+                factor = float(np.clip(1.0 - yaw_err / 0.85, 0.0, 1.0))
                 sp.speed_m_s = self.speed_target * factor
                 if self.terrain_assist:
                     # 地形保持(多轮实测收敛的最终形态):
@@ -482,6 +482,22 @@ def leg_terrain(half_n: float, half_e: float, res: int) -> str:
     return json.dumps(_leg.terrain_grid(half_n, half_e, int(res)))
 
 
+def wind_at(positions_json: str) -> str:
+    """批量采样风矢量(渲染层风粒子用)。查询不推进湍流(时间门控),
+    不影响物理与确定性。输入 [[n,e,d],...],返回 [[wn,we,wd],...]。"""
+    if _leg is None:
+        return "[]"
+    pts = json.loads(positions_json)
+    atm = _leg.sim.atmosphere
+    t = _leg.sim.t_s
+    out = []
+    for n, e, d in pts:
+        w = atm.get_state(np.array([n, e, d], dtype=float), t).wind_ned_m_s
+        out.append([round(float(w[0]), 2), round(float(w[1]), 2),
+                    round(float(w[2]), 2)])
+    return json.dumps(out)
+
+
 def hangar_rate(ship_json: str, env_json: str) -> str:
     return json.dumps(rate_ship(json.loads(ship_json), json.loads(env_json)))
 
@@ -551,21 +567,22 @@ def make_leg_env(params: dict) -> dict:
         # 风取斜侧向(az+50°):顺风正压山会把零空速的船推进坡里,无解;
         # 真实山地飞行也是迎风/斜风过脊。脊坡放缓到船的爬升能力内。
         u = [3.5, 4.5, 4.0, 3.0][slot]
-        ridge_h = 50.0 if biome == "ridge" else 70.0
-        cn = (dist / 2) * math.cos(math.radians(az))
-        ce = (dist / 2) * math.sin(math.radians(az))
+        ridge_h = 40.0 if biome == "ridge" else 55.0
+        # 脊放在航线 60% 处:给足爬升助跑(世界压缩后 50% 处到得太快爬不够)
+        cn = (dist * 0.6) * math.cos(math.radians(az))
+        ce = (dist * 0.6) * math.sin(math.radians(az))
         terrain["ridges"] = [{"center_n": cn, "center_e": ce,
                               "axis_deg": (az + 90) % 360,
-                              "height_m": ridge_h, "halfwidth_m": 450.0}]
+                              "height_m": ridge_h, "halfwidth_m": 420.0}]
         wf = {"kind": "ridge",
               "base": {"kind": "loglaw", "params": {"u_ref_m_s": u,
                        "dir_to_deg": (az + 50) % 360, "z0_m": 0.05}},
               "params": {"crest_ne_m": [cn, ce], "ridge_axis_deg": (az + 90) % 360,
-                         "height_m": ridge_h, "halfwidth_m": 450.0,
+                         "height_m": ridge_h, "halfwidth_m": 420.0,
                          "z_influence_m": 120.0,
                          "lee_recirc_frac": 0.3 if slot == 1 else 0.18}}
         turb = 0.5
-        note.append(f"风门:脊顶顺风加速(基础 {u} m/s),背风面有回流")
+        note.append(f"风门:脊顶加速(基础 {u} m/s),背风有回流——建议黎明/夜间过脊,正午风最强")
     elif biome in ("plateau_climb", "plateau"):
         wf = {"kind": "plateau_slope", "params": {
               "downhill_azimuth_deg": az_down,
@@ -616,35 +633,35 @@ WORLD = {
                      "desc": "大湖西岸。正午之后,湖风会推着锋面上岸。"},
         "shuangyu": {"name": "双屿", "region": "lake", "alt": 300, "mx": 390, "my": 340,
                      "desc": "湖心双岛。水面上没有热泡,也没有可以迫降的地方。"},
-        "aikou":    {"name": "隘口堡", "region": "mountain", "alt": 1500, "mx": 470, "my": 430,
+        "aikou":    {"name": "隘口堡", "region": "mountain", "alt": 1000, "mx": 470, "my": 430,
                      "desc": "山门。从这里开始,每一段都在爬升。"},
-        "yingling": {"name": "鹰岭", "region": "mountain", "alt": 2300, "mx": 560, "my": 370,
+        "yingling": {"name": "鹰岭", "region": "mountain", "alt": 1600, "mx": 560, "my": 370,
                      "desc": "山脊上的驿站。风门的加速气流就在头顶。"},
-        "yunti":    {"name": "云梯驿", "region": "mountain", "alt": 3200, "mx": 640, "my": 300,
+        "yunti":    {"name": "云梯驿", "region": "mountain", "alt": 2300, "mx": 640, "my": 300,
                      "desc": "云上的台阶。空气开始变得稀薄。"},
-        "shidian":  {"name": "石甸", "region": "plateau", "alt": 4200, "mx": 730, "my": 240,
-                     "desc": "高原。密度只有海平面的六成——升力、推力都打了折。"},
-        "jingfan":  {"name": "经幡台", "region": "plateau", "alt": 4400, "mx": 820, "my": 190,
+        "shidian":  {"name": "石甸", "region": "plateau", "alt": 3200, "mx": 730, "my": 240,
+                     "desc": "高原。密度只有海平面的七成——升力、推力都打了折。"},
+        "jingfan":  {"name": "经幡台", "region": "plateau", "alt": 3350, "mx": 820, "my": 190,
                      "desc": "风把经幡吹成水平。白天有热泡,夜里有下坡风。"},
-        "bingshe":  {"name": "冰舌前哨", "region": "glacier", "alt": 4600, "mx": 900, "my": 130,
+        "bingshe":  {"name": "冰舌前哨", "region": "glacier", "alt": 3500, "mx": 900, "my": 130,
                      "desc": "冰川末端。黎明的下降风像一条看不见的河。"},
-        "jiguang":  {"name": "极光城", "region": "glacier", "alt": 4700, "mx": 980, "my": 70,
+        "jiguang":  {"name": "极光城", "region": "glacier", "alt": 3600, "mx": 980, "my": 70,
                      "desc": "旅程的终点。传说夜里天上有光。"},
     },
     "legs": [
-        {"a": "weian", "b": "mailang", "dist": 1800, "biome": "plains"},
-        {"a": "weian", "b": "fengche", "dist": 1600, "biome": "plains"},
-        {"a": "mailang", "b": "yinhu", "dist": 2200, "biome": "lake"},
-        {"a": "fengche", "b": "yinhu", "dist": 2400, "biome": "lake"},
-        {"a": "yinhu", "b": "shuangyu", "dist": 2400, "biome": "lake_open"},
-        {"a": "yinhu", "b": "aikou", "dist": 6000, "biome": "foothill"},
-        {"a": "shuangyu", "b": "aikou", "dist": 5200, "biome": "foothill"},
-        {"a": "aikou", "b": "yingling", "dist": 5200, "biome": "ridge"},
-        {"a": "yingling", "b": "yunti", "dist": 5400, "biome": "ridge_high"},
-        {"a": "yunti", "b": "shidian", "dist": 6000, "biome": "plateau_climb"},
-        {"a": "shidian", "b": "jingfan", "dist": 2600, "biome": "plateau"},
-        {"a": "jingfan", "b": "bingshe", "dist": 2800, "biome": "glacier_app"},
-        {"a": "bingshe", "b": "jiguang", "dist": 3000, "biome": "glacier"},
+        {"a": "weian", "b": "mailang", "dist": 1100, "biome": "plains"},
+        {"a": "weian", "b": "fengche", "dist": 1000, "biome": "plains"},
+        {"a": "mailang", "b": "yinhu", "dist": 1300, "biome": "lake"},
+        {"a": "fengche", "b": "yinhu", "dist": 1400, "biome": "lake"},
+        {"a": "yinhu", "b": "shuangyu", "dist": 1500, "biome": "lake_open"},
+        {"a": "yinhu", "b": "aikou", "dist": 3400, "biome": "foothill"},
+        {"a": "shuangyu", "b": "aikou", "dist": 3200, "biome": "foothill"},
+        {"a": "aikou", "b": "yingling", "dist": 3600, "biome": "ridge"},
+        {"a": "yingling", "b": "yunti", "dist": 3800, "biome": "ridge_high"},
+        {"a": "yunti", "b": "shidian", "dist": 4200, "biome": "plateau_climb"},
+        {"a": "shidian", "b": "jingfan", "dist": 1500, "biome": "plateau"},
+        {"a": "jingfan", "b": "bingshe", "dist": 1600, "biome": "glacier_app"},
+        {"a": "bingshe", "b": "jiguang", "dist": 1800, "biome": "glacier"},
     ],
 }
 
