@@ -357,9 +357,8 @@ function drawMap(){
   ctx.fillStyle='#10131a'; ctx.fillRect(0,0,w,h);
   // 航线
   for (const l of LEGS){
-    const known = G.visited.includes(l.a)||G.visited.includes(l.b);
-    ctx.strokeStyle = known ? '#3a4250' : '#232a35';
-    ctx.lineWidth = 2; ctx.setLineDash(known?[]:[4,5]);
+    ctx.strokeStyle = '#3a4250';
+    ctx.lineWidth = 2; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(X(l.a),Y(l.a)); ctx.lineTo(X(l.b),Y(l.b)); ctx.stroke();
   }
   ctx.setLineDash([]);
@@ -370,17 +369,16 @@ function drawMap(){
   }
   // 驿站
   for (const [id,s] of Object.entries(STATIONS)){
-    const known = G.visited.includes(id) || neighbors(G.station).includes(id);
     ctx.beginPath(); ctx.arc(X(id),Y(id), id===G.station?10:7, 0, 7);
-    ctx.fillStyle = known ? REGION_COLOR[s.region] : '#2a313c';
+    ctx.fillStyle = REGION_COLOR[s.region];
     ctx.fill();
     if (id===G.station){ ctx.strokeStyle='#fff'; ctx.lineWidth=2.5; ctx.stroke(); }
     if (id==='jiguang'){ ctx.strokeStyle='#c9a2e8'; ctx.lineWidth=1.5; ctx.stroke(); }
-    ctx.fillStyle = known ? '#d8dee8' : '#4a5260';
+    ctx.fillStyle = '#d8dee8';
     ctx.font='12px ui-monospace';
-    ctx.fillText(known ? s.name : '?', X(id)+12, Y(id)+4);
-    if (known) { ctx.fillStyle='#5e6b7d'; ctx.font='10px ui-monospace';
-                 ctx.fillText(s.alt+'m', X(id)+12, Y(id)+16); }
+    ctx.fillText(s.name, X(id)+12, Y(id)+4);
+    ctx.fillStyle='#5e6b7d'; ctx.font='10px ui-monospace';
+    ctx.fillText(s.alt+'m', X(id)+12, Y(id)+16);
   }
 }
 mapCv.addEventListener('click', ev=>{
@@ -398,7 +396,7 @@ function selectDest(id){
   const leg = legBetween(G.station,id), B = STATIONS[id];
   document.getElementById('legPanel').style.display='';
   document.getElementById('legTitle').textContent =
-    `→ ${G.visited.includes(id)?B.name:'未知驿站'}(${leg.dist/1000} km,${B.alt-STATIONS[G.station].alt>=0?'+':''}${B.alt-STATIONS[G.station].alt} m)`;
+    `→ ${B.name}(${leg.dist/1000} km,${B.alt-STATIONS[G.station].alt>=0?'+':''}${B.alt-STATIONS[G.station].alt} m)`;
   const slotDiv=document.getElementById('slotBtns'); slotDiv.innerHTML='<span class="hint">出发时段:</span>';
   SLOTS.forEach((nm,i)=>{
     const b=document.createElement('button'); b.textContent=nm;
@@ -456,7 +454,7 @@ function renderContracts(){
   }
   for (const o of seededOffers()){
     const el=document.createElement('div'); el.className='contract';
-    el.innerHTML=`📦 ${o.name} → ${G.visited.includes(o.to)?STATIONS[o.to].name:'?'} · ${o.mass}kg · 酬金 <span class="val">${o.pay}</span> 币
+    el.innerHTML=`📦 ${o.name} → ${STATIONS[o.to].name} · ${o.mass}kg · 酬金 <span class="val">${o.pay}</span> 币
       <button style="float:right;padding:2px 8px">接单</button>`;
     el.querySelector('button').onclick=()=>{ G.cargo=o; saveGame(); refreshStation(); };
     div.appendChild(el);
