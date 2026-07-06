@@ -199,3 +199,332 @@ class GroundContact:
                 water = bool(self.terrain.is_water(float(pw[0]), float(pw[1])))
         return {"contact": bool(max_pen > 0.0), "pen_m": float(max_pen),
                 "v_down_m_s": v_down, "v_horiz_m_s": v_horiz, "water": water}
+
+
+# ================================================================
+# WorldTerrain:烘焙式程序化景观(游戏用;物理与渲染同源)
+# ================================================================
+def _np_vnoise(X, Y, seed):
+    """向量化值噪声(numpy),哈希与 AnalyticTerrain 同族,确定性。"""
+    xi = np.floor(X); yi = np.floor(Y)
+    xf = X - xi; yf = Y - yi
+
+    def h(a, b):
+        n = np.sin(a * 127.1 + b * 311.7 + seed * 74.7) * 43758.5453
+        return n - np.floor(n)
+
+    sx = xf * xf * (3.0 - 2.0 * xf)
+    sy = yf * yf * (3.0 - 2.0 * yf)
+    return ((h(xi, yi) * (1 - sx) + h(xi + 1, yi) * sx) * (1 - sy)
+            + (h(xi, yi + 1) * (1 - sx) + h(xi + 1, yi + 1) * sx) * sy)
+
+
+def _np_fbm(X, Y, octaves, seed, ridged=False):
+    v = np.zeros_like(X); amp = 1.0; f = 1.0; tot = 0.0
+    for o in range(octaves):
+        n = _np_vnoise(X * f, Y * f, seed + o * 13)
+        if ridged:
+            n = 1.0 - np.abs(2.0 * n - 1.0)
+            n = n * n
+        v += amp * n; tot += amp
+        amp *= 0.52; f *= 2.05
+    return v / tot
+
+
+class WorldTerrain(Terrain):
+    """程序化景观地形(烘焙网格 + O(1) 双线性查询)。
+
+    组成:
+      基底坡(沿 leg 下坡向) + 域扭曲脊状分形(山脉真实起伏)
+      + 航线走廊阻尼(走廊内起伏受控可飞,走廊外放大成高耸雪山)
+      + 山脊 bump(风门,与风场同源) + 河流(源点顺坡追踪、刻蚀河谷、
+        水面沿程单调下降,汇入湖/海) + 湖/海水面。
+
+    [假设] 地形烘焙为 grid_n×grid_n 网格后双线性插值(默认 512²,~16m 格距)
+    / 物理接触与渲染完全同源;查询 O(1),比解析式逐项求和更快
+    / 需要 <16m 的微地形(沟坎)时提高分辨率。
+    [假设] 河流由"raw 场贪婪下坡走"生成 / 走向天然沿谷线、终于水体或图边,
+    水系自洽 / 不模拟流量/侵蚀动力学。
+    """
+
+    HALF_EXTENT_FACTOR = 1.15   # 烘焙范围相对航段包围盒的放大
+
+    def __init__(self, spec: dict):
+        self.spec = spec or {}
+        s = self.spec
+        self._seed = int(s.get("seed", 0))
+        self._biome = s.get("biome", "plains")
+        route = s.get("route", {"start_n": 0.0, "start_e": 0.0,
+                                "dest_n": 1000.0, "dest_e": 0.0})
+        self._a = np.array([float(route["start_n"]), float(route["start_e"])])
+        self._b = np.array([float(route["dest_n"]), float(route["dest_e"])])
+        c = 0.5 * (self._a + self._b)
+        half = max(float(np.linalg.norm(self._b - self._a)) * 0.75, 1600.0) \
+            * self.HALF_EXTENT_FACTOR
+        self._c = c; self._half = half
+        n_grid = int(s.get("grid_n", 512))
+        self._n = n_grid
+        self._cell = 2.0 * half / (n_grid - 1)
+        self._bake()
+
+    # ---- 烘焙 ----
+    def _bake(self) -> None:
+        s = self.spec
+        n = self._n
+        axis = np.linspace(-self._half, self._half, n)
+        N, E = np.meshgrid(axis + self._c[0], axis + self._c[1], indexing="ij")
+
+        # 基底坡(与风场同源:slope 键与 AnalyticTerrain 一致)
+        H = np.zeros_like(N)
+        slope = s.get("slope")
+        if slope:
+            az = math.radians(float(slope["azimuth_deg"]))
+            g = float(slope["grade"])
+            H += -g * (np.cos(az) * N + np.sin(az) * E)
+        H += float(s.get("base_m", 0.0))
+
+        # 走廊阻尼因子:到航线线段的距离
+        ab = self._b - self._a
+        L2 = float(ab @ ab) + 1e-9
+        t = np.clip(((N - self._a[0]) * ab[0] + (E - self._a[1]) * ab[1]) / L2, 0, 1)
+        dn = N - (self._a[0] + t * ab[0]); de = E - (self._a[1] + t * ab[1])
+        d_corr = np.sqrt(dn * dn + de * de)
+        f_far = np.clip((d_corr - 700.0) / 2600.0, 0.0, 1.0)
+        f_far = f_far * f_far * (3 - 2 * f_far)
+
+        # 群系起伏参数(近走廊 amp_near 保证可飞,远处 amp_far 造雪山)
+        B = self._biome
+        prm = {
+            "plains":       (18.0, 130.0, 0.25, 3),
+            "lake":         (8.0,  90.0,  0.2,  3),
+            "lake_open":    (4.0,  60.0,  0.15, 3),
+            "foothill":     (45.0, 650.0, 0.55, 4),
+            "ridge":        (55.0, 1250.0, 0.75, 4),
+            "ridge_high":   (60.0, 1500.0, 0.8,  4),
+            "plateau_climb": (40.0, 900.0, 0.6,  4),
+            "plateau":      (30.0, 750.0, 0.5,  4),
+            "glacier_app":  (45.0, 1500.0, 0.7,  4),
+            "glacier":      (50.0, 1800.0, 0.75, 4),
+        }.get(B, (20.0, 150.0, 0.3, 3))
+        amp_near, amp_far, ridge_mix, octs = prm
+
+        # 域扭曲脊状分形
+        scale = 1.0 / 2600.0
+        WX = _np_fbm(N * scale * 0.6, E * scale * 0.6, 2, self._seed + 91) * 2.2
+        WY = _np_fbm(N * scale * 0.6 + 5.2, E * scale * 0.6 + 1.3, 2, self._seed + 57) * 2.2
+        base_n = _np_fbm(N * scale + WX, E * scale + WY, octs, self._seed)
+        ridge_n = _np_fbm(N * scale * 1.4 + WY, E * scale * 1.4 + WX, octs,
+                          self._seed + 7, ridged=True)
+        relief = (1 - ridge_mix) * (base_n - 0.5) * 2.0 + ridge_mix * (ridge_n - 0.35) * 2.2
+        amp = amp_near + (amp_far - amp_near) * f_far
+        H += relief * amp
+
+        # 山脊 bump(风门,与风场共用参数)
+        for r in s.get("ridges", []):
+            axr = math.radians(float(r["axis_deg"]))
+            xi = (N - float(r["center_n"])) * (-math.sin(axr)) \
+               + (E - float(r["center_e"])) * math.cos(axr)
+            H += float(r["height_m"]) * np.exp(-(xi / float(r["halfwidth_m"])) ** 2)
+
+        # 热侵蚀式平滑(去尖刺,山形更真实)
+        for _ in range(2):
+            Hs = H.copy()
+            Hs[1:-1, 1:-1] = (H[1:-1, 1:-1] * 0.6
+                              + 0.1 * (H[:-2, 1:-1] + H[2:, 1:-1]
+                                       + H[1:-1, :-2] + H[1:-1, 2:]))
+            H = Hs
+
+        # ---- 水系 ----
+        WL = np.full_like(H, np.nan)         # 每格水面高度(NaN=无水)
+        water_level = s.get("water_level_m")
+        if water_level is not None:
+            wl = float(water_level)
+            H = np.maximum(H, np.where(H < wl, H, H))   # 保留湖床
+            mask = H < wl
+            WL[mask] = wl
+        # 河流:上游源点顺坡追踪 → 刻蚀 + 沿程水面
+        n_riv = {"plains": 2, "lake": 2, "foothill": 2, "ridge": 1, "ridge_high": 1,
+                 "plateau_climb": 1, "plateau": 1, "glacier_app": 1, "glacier": 1,
+                 "lake_open": 0}.get(B, 1)
+        rng = np.random.default_rng(self._seed + 1234)
+        for k in range(n_riv):
+            self._trace_river(H, WL, rng)
+
+        # 起降场坪:航段两端各平整一块(驿站),去水
+        for pt in (self._a, self._b):
+            xi = (pt[0] - (self._c[0] - self._half)) / self._cell
+            yi = (pt[1] - (self._c[1] - self._half)) / self._cell
+            i0, j0 = int(round(xi)), int(round(yi))
+            if 0 <= i0 < n and 0 <= j0 < n:
+                pad = int(170.0 / self._cell)
+                lo_i, hi_i = max(0, i0 - pad), min(n, i0 + pad + 1)
+                lo_j, hi_j = max(0, j0 - pad), min(n, j0 + pad + 1)
+                ii, jj = np.meshgrid(np.arange(lo_i, hi_i), np.arange(lo_j, hi_j),
+                                     indexing="ij")
+                d = np.sqrt(((ii - i0) ** 2 + (jj - j0) ** 2)) * self._cell
+                w = np.clip(1.0 - d / (pad * self._cell), 0.0, 1.0)
+                w = w * w * (3 - 2 * w)
+                h0 = H[i0, j0]
+                H[lo_i:hi_i, lo_j:hi_j] = (H[lo_i:hi_i, lo_j:hi_j] * (1 - w) + h0 * w)
+                WL[lo_i:hi_i, lo_j:hi_j] = np.where(w > 0.35, np.nan,
+                                                    WL[lo_i:hi_i, lo_j:hi_j])
+        self._H = H
+        self._WL = WL
+
+    def _trace_river(self, H, WL, rng) -> None:
+        n = self._n
+        # 源点:随机取高处样本中的最高者
+        cand = rng.integers(6, n - 6, size=(40, 2))
+        heights = H[cand[:, 0], cand[:, 1]]
+        i, j = cand[int(np.argmax(heights))]
+        path = []
+        for _ in range(n * 2):
+            path.append((i, j))
+            if not np.isnan(WL[i, j]):
+                break                          # 汇入湖/海
+            # 8 邻域最陡下降(带轻微噪声防直线)
+            best = None; bh = H[i, j]
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di == 0 and dj == 0:
+                        continue
+                    ii, jj = i + di, j + dj
+                    if 0 <= ii < n and 0 <= jj < n:
+                        hh = H[ii, jj] + rng.normal(0, 0.05)
+                        if hh < bh:
+                            bh = hh; best = (ii, jj)
+            if best is None:
+                break                          # 洼地(小湖)
+            i, j = best
+            if i < 2 or j < 2 or i > n - 3 or j > n - 3:
+                break                          # 出图
+        if len(path) < 12:
+            return
+        # 刻蚀 + 沿程水面(单调不升)
+        depth, width_cells = 7.0, max(2, int(28.0 / self._cell))
+        lvl = None
+        for (i, j) in path:
+            bed = H[i, j] - depth
+            lo_i, hi_i = max(0, i - width_cells), min(n, i + width_cells + 1)
+            lo_j, hi_j = max(0, j - width_cells), min(n, j + width_cells + 1)
+            sub = H[lo_i:hi_i, lo_j:hi_j]
+            ii, jj = np.meshgrid(np.arange(lo_i, hi_i), np.arange(lo_j, hi_j),
+                                 indexing="ij")
+            d2 = ((ii - i) ** 2 + (jj - j) ** 2) * (self._cell ** 2)
+            carve = depth * np.exp(-d2 / (2 * (width_cells * self._cell * 0.55) ** 2))
+            H[lo_i:hi_i, lo_j:hi_j] = np.minimum(sub, np.maximum(bed, sub - carve))
+            w = bed + 2.2
+            lvl = w if lvl is None else min(lvl, w)     # 水面沿程单调下降
+            riv_w = max(1, int(width_cells * 0.45))
+            for di in range(-riv_w, riv_w + 1):
+                for dj in range(-riv_w, riv_w + 1):
+                    ii2, jj2 = i + di, j + dj
+                    if 0 <= ii2 < n and 0 <= jj2 < n and H[ii2, jj2] < lvl:
+                        if np.isnan(WL[ii2, jj2]) or WL[ii2, jj2] < lvl:
+                            WL[ii2, jj2] = lvl
+
+    # ---- 查询(物理热点:O(1) 双线性) ----
+    def _idx(self, n_m: float, e_m: float):
+        x = (n_m - (self._c[0] - self._half)) / self._cell
+        y = (e_m - (self._c[1] - self._half)) / self._cell
+        x = min(max(x, 0.0), self._n - 1.001)
+        y = min(max(y, 0.0), self._n - 1.001)
+        return x, y
+
+    def height_m(self, n_m: float, e_m: float) -> float:
+        x, y = self._idx(float(n_m), float(e_m))
+        i, j = int(x), int(y)
+        fx, fy = x - i, y - j
+        H = self._H
+        return float(H[i, j] * (1 - fx) * (1 - fy) + H[i + 1, j] * fx * (1 - fy)
+                     + H[i, j + 1] * (1 - fx) * fy + H[i + 1, j + 1] * fx * fy)
+
+    def water_h(self, n_m: float, e_m: float) -> float | None:
+        x, y = self._idx(float(n_m), float(e_m))
+        w = self._WL[int(round(x)), int(round(y))]
+        return None if np.isnan(w) else float(w)
+
+    def is_water(self, n_m: float, e_m: float) -> bool:
+        return self.water_h(n_m, e_m) is not None
+
+    # ---- 导出(渲染) ----
+    def export_grids(self, near_res: int = 160, far_res: int = 96,
+                     far_half_m: float = 22000.0) -> dict:
+        """近景精细网格(高度/水面/植被密度) + 远景粗网格(雪山)。"""
+        n = self._n
+        idx = np.linspace(0, n - 1, near_res).astype(int)
+        Hn = self._H[np.ix_(idx, idx)]
+        Wn = self._WL[np.ix_(idx, idx)]
+        # 植被密度(生态规则):噪声林斑 × 坡度惩罚 × 海拔(林线) × 水源加成
+        axis = np.linspace(-self._half, self._half, near_res)
+        N, E = np.meshgrid(axis + self._c[0], axis + self._c[1], indexing="ij")
+        forest = _np_fbm(N / 900.0, E / 900.0, 3, self._seed + 400)
+        gy, gx = np.gradient(Hn, 2 * self._half / (near_res - 1))
+        slope = np.hypot(gx, gy)
+        hmin, hmax = float(Hn.min()), float(Hn.max())
+        span = max(hmax - hmin, 1.0)
+        treeline = hmin + span * {"plains": 1.2, "lake": 1.2, "lake_open": 1.2,
+                                  "foothill": 0.75, "ridge": 0.5, "ridge_high": 0.4,
+                                  "plateau_climb": 0.55, "plateau": 0.6,
+                                  "glacier_app": 0.25, "glacier": 0.15}.get(self._biome, 0.8)
+        dens = np.clip((forest - 0.42) * 2.6, 0, 1)
+        dens *= np.clip(1.0 - slope / 0.5, 0, 1)
+        dens *= np.clip((treeline - Hn) / (span * 0.18), 0, 1)
+        near_water = ~np.isnan(Wn)
+        # 水源加成:靠水 3 格内密度提升
+        wsoft = near_water.astype(float)
+        for _ in range(3):
+            wsoft[1:-1, 1:-1] = np.maximum(
+                wsoft[1:-1, 1:-1],
+                0.75 * np.maximum.reduce([wsoft[:-2, 1:-1], wsoft[2:, 1:-1],
+                                          wsoft[1:-1, :-2], wsoft[1:-1, 2:]]))
+        dens = np.clip(dens + wsoft * 0.35 * (dens > 0.02), 0, 1)
+        dens[near_water] = 0.0
+
+        # 远景网格(同一函数,含走廊阻尼→远处才高耸)
+        fx = np.linspace(-far_half_m, far_half_m, far_res)
+        FN, FE = np.meshgrid(fx + self._c[0], fx + self._c[1], indexing="ij")
+        FH = self._far_height(FN, FE)
+
+        rnd2 = lambda A: [[round(float(v), 1) for v in row] for row in A]
+        wl_out = [[(round(float(v), 1) if not np.isnan(v) else None) for v in row]
+                  for row in Wn]
+        return {"center_n": float(self._c[0]), "center_e": float(self._c[1]),
+                "half_n": self._half, "half_e": self._half, "res": near_res,
+                "heights": rnd2(Hn), "water_h": wl_out,
+                "flora": [[round(float(v), 2) for v in row] for row in dens],
+                "far": {"half_m": far_half_m, "res": far_res, "heights": rnd2(FH)},
+                "start": [float(self._a[0]), float(self._a[1])],
+                "dest": [float(self._b[0]), float(self._b[1])]}
+
+    def _far_height(self, N, E):
+        """远景:与烘焙同参数的解析计算(粗网格一次性,无需精度)。"""
+        s = self.spec
+        H = np.zeros_like(N)
+        slope = s.get("slope")
+        if slope:
+            az = math.radians(float(slope["azimuth_deg"]))
+            H += -float(slope["grade"]) * (np.cos(az) * N + np.sin(az) * E)
+        H += float(s.get("base_m", 0.0))
+        ab = self._b - self._a
+        L2 = float(ab @ ab) + 1e-9
+        t = np.clip(((N - self._a[0]) * ab[0] + (E - self._a[1]) * ab[1]) / L2, 0, 1)
+        dn = N - (self._a[0] + t * ab[0]); de = E - (self._a[1] + t * ab[1])
+        f_far = np.clip((np.sqrt(dn * dn + de * de) - 700.0) / 2600.0, 0, 1)
+        f_far = f_far * f_far * (3 - 2 * f_far)
+        prm = {
+            "plains": (18.0, 130.0, 0.25, 3), "lake": (8.0, 90.0, 0.2, 3),
+            "lake_open": (4.0, 60.0, 0.15, 3), "foothill": (45.0, 650.0, 0.55, 4),
+            "ridge": (55.0, 1250.0, 0.75, 4), "ridge_high": (60.0, 1500.0, 0.8, 4),
+            "plateau_climb": (40.0, 900.0, 0.6, 4), "plateau": (30.0, 750.0, 0.5, 4),
+            "glacier_app": (45.0, 1500.0, 0.7, 4), "glacier": (50.0, 1800.0, 0.75, 4),
+        }.get(self._biome, (20.0, 150.0, 0.3, 3))
+        amp_near, amp_far, ridge_mix, octs = prm
+        scale = 1.0 / 2600.0
+        WX = _np_fbm(N * scale * 0.6, E * scale * 0.6, 2, self._seed + 91) * 2.2
+        WY = _np_fbm(N * scale * 0.6 + 5.2, E * scale * 0.6 + 1.3, 2, self._seed + 57) * 2.2
+        base_n = _np_fbm(N * scale + WX, E * scale + WY, octs, self._seed)
+        ridge_n = _np_fbm(N * scale * 1.4 + WY, E * scale * 1.4 + WX, octs,
+                          self._seed + 7, ridged=True)
+        relief = (1 - ridge_mix) * (base_n - 0.5) * 2.0 + ridge_mix * (ridge_n - 0.35) * 2.2
+        return H + relief * (amp_near + (amp_far - amp_near) * f_far)

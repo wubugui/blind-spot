@@ -601,7 +601,9 @@ function initThree(){
       transparent:true,opacity:0, sizeAttenuation:true, depthWrite:false}));
     scene.add(stars);
   }
-  windArrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(),1,0x2fb3c7,8,4);
+  windArrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(),1,0x37b6c9,5,2.5);
+  windArrow.line.material.transparent=true; windArrow.line.material.opacity=0.55;
+  windArrow.cone.material.transparent=true; windArrow.cone.material.opacity=0.55;
   scene.add(windArrow);
 }
 
@@ -609,7 +611,9 @@ function initThree(){
 const SLOT_SUN=[{el:9,az:95},{el:52,az:180},{el:8,az:262},{el:-14,az:300}]; // 黎明/正午/黄昏/夜
 const SLOT_FOG=['#c9a98f','#bcd2e8','#d9987a','#1c2740'];
 const SLOT_EXPO=[0.75,0.95,0.72,0.38];
+let atmoSlot=1, atmoT=0;
 function applyAtmosphere(biome, slot){
+  atmoSlot=slot; atmoT=0;
   const su=SLOT_SUN[slot];
   const phi=THREE.MathUtils.degToRad(90-su.el), theta=THREE.MathUtils.degToRad(su.az);
   const sunPos=new THREE.Vector3().setFromSphericalCoords(1,phi,theta);
@@ -719,11 +723,21 @@ function cloudTexture(size=160){
   }
   const t=new THREE.CanvasTexture(cv); return t;
 }
+function dotTexture(size=48){
+  const cv=document.createElement('canvas'); cv.width=cv.height=size;
+  const ctx=cv.getContext('2d');
+  const g=ctx.createRadialGradient(size/2,size/2,0,size/2,size/2,size/2);
+  g.addColorStop(0,'rgba(255,255,255,1)');
+  g.addColorStop(0.55,'rgba(255,255,255,0.55)');
+  g.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,size,size);
+  return new THREE.CanvasTexture(cv);
+}
 let TEX=null;
 function ensureTex(){
   if(TEX) return;
   TEX={detail:noiseTexture(256,222,255), waterN:waterNormalTexture(),
-       cloud:cloudTexture()};
+       cloud:cloudTexture(), dot:dotTexture()};
   TEX.detail.repeat.set(26,26);
 }
 
@@ -767,7 +781,7 @@ function terrainColor(biome,h,hMin,span,slope,nz,waterLevel){
   return c;
 }
 
-let waterMesh=null, mountainRing=null, shadowBlob=null, decorMeshes=[];
+let waterMesh=null, farMesh=null, shadowBlob=null, decorMeshes=[], cirrus=null, fogLayer=null;
 function buildTerrain(grid, biome, slot){
   ensureTex();
   if (terrainMesh) scene.remove(terrainMesh);
@@ -781,21 +795,32 @@ function buildTerrain(grid, biome, slot){
   for(const row of grid.heights) for(const hh of row){ hMin=Math.min(hMin,hh); hMax=Math.max(hMax,hh); }
   const span=Math.max(hMax-hMin,1);
   const cell=2*hn/(res-1);
-  const waterLevel=(legSpec&&legSpec.terrain&&legSpec.terrain.water_level_m!==undefined)
-                   ? legSpec.terrain.water_level_m : undefined;
+  const WH=grid.water_h;
+  // 岸线检测:格子本身无水但邻近有水且高差小 → 沙滩
+  function nearWater(i,j){
+    for(let di=-2;di<=2;di++)for(let dj=-2;dj<=2;dj++){
+      const ii=i+di, jj=j+dj;
+      if(ii>=0&&ii<res&&jj>=0&&jj<res&&WH[ii][jj]!==null) return WH[ii][jj];
+    }
+    return null;
+  }
   for (let i=0;i<pos.count;i++){
     const ix=i%res, iz=Math.floor(i/res);
     const nIdx=res-1-iz, eIdx=ix;
     const h=grid.heights[nIdx][eIdx];
     pos.setY(i, h);
-    // 坡度(中央差分)
     const hN=grid.heights[Math.min(nIdx+1,res-1)][eIdx], hS=grid.heights[Math.max(nIdx-1,0)][eIdx];
     const hE=grid.heights[nIdx][Math.min(eIdx+1,res-1)], hW=grid.heights[nIdx][Math.max(eIdx-1,0)];
     const slope=Math.hypot((hN-hS)/(2*cell),(hE-hW)/(2*cell));
     const nz=fbm(nIdx*0.11,eIdx*0.11,3,biome.length);
-    const c = grid.water[nIdx][eIdx]
-      ? new THREE.Color('#27506e')
-      : terrainColor(biome,h,hMin,span,slope,nz,waterLevel);
+    let c;
+    if(WH[nIdx][eIdx]!==null){
+      c=new THREE.Color('#22485f');                       // 水下湖床
+    } else {
+      const wl=nearWater(nIdx,eIdx);
+      c=terrainColor(biome,h,hMin,span,slope,nz,undefined);
+      if(wl!==null && h<wl+2.6) c.copy(PAL.sand);         // 岸线沙滩
+    }
     colors[i*3]=c.r; colors[i*3+1]=c.g; colors[i*3+2]=c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
@@ -804,19 +829,29 @@ function buildTerrain(grid, biome, slot){
     vertexColors:true, roughness:0.96, metalness:0.0, map:TEX.detail}));
   terrainMesh.position.set(grid.center_e,0,-grid.center_n);
   scene.add(terrainMesh);
-  // ---- 动画水面(湖区) ----
-  if (waterLevel!==undefined){
-    waterMesh=new THREE.Mesh(new THREE.PlaneGeometry(he*2,hn*2),
-      new THREE.MeshPhongMaterial({color:0x235a80, specular:0xbfd9ef, shininess:120,
-        transparent:true, opacity:0.92, normalMap:TEX.waterN,
-        normalScale:new THREE.Vector2(0.55,0.55)}));
-    waterMesh.material.normalMap.repeat.set(30,30);
-    waterMesh.rotation.x=-Math.PI/2;
-    waterMesh.position.set(grid.center_e, waterLevel+0.25, -grid.center_n);
+  // ---- 水面:逐格水位(湖/海/河一张网,干处沉到地形下隐藏) ----
+  let hasWater=false;
+  outer: for(const row of WH){ for(const v of row) if(v!==null){hasWater=true; break outer;} }
+  if (hasWater){
+    const wgeo=new THREE.PlaneGeometry(he*2, hn*2, res-1, res-1);
+    wgeo.rotateX(-Math.PI/2);
+    const wpos=wgeo.attributes.position;
+    for(let i=0;i<wpos.count;i++){
+      const ix=i%res, iz=Math.floor(i/res);
+      const nIdx=res-1-iz, eIdx=ix;
+      const wl=WH[nIdx][eIdx];
+      wpos.setY(i, wl!==null? wl+0.15 : grid.heights[nIdx][eIdx]-9);
+    }
+    wgeo.computeVertexNormals();
+    waterMesh=new THREE.Mesh(wgeo, new THREE.MeshPhongMaterial({
+      color:0x2a5f86, specular:0xcfe4f4, shininess:130, transparent:true,
+      opacity:0.9, normalMap:TEX.waterN, normalScale:new THREE.Vector2(0.5,0.5)}));
+    waterMesh.material.normalMap.repeat.set(34,34);
+    waterMesh.position.set(grid.center_e,0,-grid.center_n);
     scene.add(waterMesh);
   }
-  buildMountainRing(biome, hMax);
-  buildDecor(grid, biome, waterLevel);
+  buildFarTerrain(grid, biome);
+  buildDecor(grid, biome);
   if(!shadowBlob){
     shadowBlob=new THREE.Mesh(new THREE.CircleGeometry(1,22),
       new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:0.28,depthWrite:false}));
@@ -837,87 +872,129 @@ function buildTerrain(grid, biome, slot){
   destBeacon.add(ring,pole); scene.add(destBeacon);
 }
 
+/* ---- 真 3D 远景(高耸雪山,同一景观函数生成) ---- */
 /* ---- 远山剪影环(纵深感) ---- */
-function buildMountainRing(biome, baseH){
-  if(mountainRing) scene.remove(mountainRing);
-  const K=96, R=11000;
-  const posArr=[], colArr=[];
-  const snowy=biome.includes('ridge')||biome.startsWith('glacier')||biome.startsWith('plateau');
-  const base=new THREE.Color(snowy?'#5b6a7d':'#54636f');
-  const peakC=new THREE.Color(snowy?'#e8f1f7':'#8e9caa');
-  for(let k=0;k<K;k++){
-    const a0=k/K*Math.PI*2, a1=(k+0.5)/K*Math.PI*2, a2=(k+1)/K*Math.PI*2;
-    const hpk=baseH + 500 + fbm(k*0.35,1.7,3,5)*(snowy?2600:1500);
-    const y0=baseH-300;
-    posArr.push(Math.cos(a0)*R,y0,Math.sin(a0)*R,
-                Math.cos(a2)*R,y0,Math.sin(a2)*R,
-                Math.cos(a1)*R,hpk,Math.sin(a1)*R);
-    colArr.push(base.r,base.g,base.b, base.r,base.g,base.b, peakC.r,peakC.g,peakC.b);
+function buildFarTerrain(grid, biome){
+  if(farMesh) scene.remove(farMesh);
+  const far=grid.far, res=far.res, half=far.half_m;
+  const geo=new THREE.PlaneGeometry(half*2, half*2, res-1, res-1);
+  geo.rotateX(-Math.PI/2);
+  const pos=geo.attributes.position;
+  const colors=new Float32Array(pos.count*3);
+  let hMin=1e9,hMax=-1e9;
+  for(const row of far.heights) for(const hh of row){hMin=Math.min(hMin,hh);hMax=Math.max(hMax,hh);}
+  const snowline=hMin+(hMax-hMin)*0.42;
+  const rockC=new THREE.Color(biome.startsWith('glacier')?'#8fa2b5':'#6d6a62');
+  const lowC =new THREE.Color(biome==='plains'||biome==='lake'?'#5a7c46':
+              biome.startsWith('plateau')?'#93794d':'#5e6b58');
+  const snowC=new THREE.Color('#f4f8fb');
+  for(let i=0;i<pos.count;i++){
+    const ix=i%res, iz=Math.floor(i/res);
+    const nIdx=res-1-iz, eIdx=ix;
+    const h=far.heights[nIdx][eIdx];
+    pos.setY(i, h-6);                                     // 略沉,近景网格盖在上面
+    const c=lowC.clone();
+    const t1=Math.min(Math.max((h-hMin)/(snowline-hMin+1),0),1);
+    c.lerp(rockC, t1*0.9);
+    if(h>snowline) c.lerp(snowC, Math.min(1,(h-snowline)/((hMax-snowline)*0.35+1)));
+    colors[i*3]=c.r; colors[i*3+1]=c.g; colors[i*3+2]=c.b;
   }
-  const g=new THREE.BufferGeometry();
-  g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(posArr),3));
-  g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(colArr),3));
-  mountainRing=new THREE.Mesh(g,new THREE.MeshBasicMaterial({vertexColors:true,
-    side:THREE.DoubleSide, fog:true}));
-  scene.add(mountainRing);
+  geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
+  geo.computeVertexNormals();
+  farMesh=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({
+    vertexColors:true, roughness:1.0}));
+  farMesh.position.set(grid.center_e,0,-grid.center_n);
+  scene.add(farMesh);
 }
 
 /* ---- 地表点缀:实例化树/岩石/冰锥(近地参照物,速度感) ---- */
-function buildDecor(grid, biome, waterLevel){
+function buildDecor(grid, biome){
   decorMeshes.forEach(m=>scene.remove(m)); decorMeshes=[];
   const q=(G&&G.gfxLow)?0.45:1.0;
-  const hn=grid.half_n, he=grid.half_e;
-  function scatter(count, make, ok){
-    const list=[];
-    for(let t=0;t<count*3&&list.length<count;t++){
-      const n=grid.center_n+(Math.random()-0.5)*1.9*hn;
-      const e=grid.center_e+(Math.random()-0.5)*1.9*he;
-      const h=heightAt(grid,n,e);
-      if(waterLevel!==undefined&&h<waterLevel+1.5) continue;
-      const h2=heightAt(grid,n+30,e);
-      if(Math.abs(h2-h)/30>0.35) continue;
-      if(ok&&!ok(h)) continue;
-      list.push({n,e,h});
+  const res=grid.res, hn=grid.half_n, he=grid.half_e;
+  const F=grid.flora, WH=grid.water_h;
+  const cellN=2*hn/(res-1), cellE=2*he/(res-1);
+  // 按植被密度通道加权采样(生态规则在 Python 侧统一计算)
+  function floraSample(count){
+    const out=[];
+    for(let t=0;t<count*4&&out.length<count;t++){
+      const i=1+Math.floor(Math.random()*(res-2)), j=1+Math.floor(Math.random()*(res-2));
+      if(WH[i][j]!==null) continue;
+      if(Math.random()>F[i][j]) continue;
+      const n=grid.center_n-hn+i*cellN+(Math.random()-0.5)*cellN;
+      const e=grid.center_e-he+j*cellE+(Math.random()-0.5)*cellE;
+      out.push({n,e,h:heightAt(grid,n,e)});
     }
-    make(list);
+    return out;
+  }
+  function bareSample(count, ok){
+    const out=[];
+    for(let t=0;t<count*4&&out.length<count;t++){
+      const i=1+Math.floor(Math.random()*(res-2)), j=1+Math.floor(Math.random()*(res-2));
+      if(WH[i][j]!==null) continue;
+      const h=grid.heights[i][j];
+      if(ok&&!ok(h,F[i][j])) continue;
+      const n=grid.center_n-hn+i*cellN+(Math.random()-0.5)*cellN;
+      const e=grid.center_e-he+j*cellE+(Math.random()-0.5)*cellE;
+      out.push({n,e,h:heightAt(grid,n,e)});
+    }
+    return out;
   }
   const dummy=new THREE.Object3D();
-  function inst(geoM, matM, list, sMin, sMax, yOff=0){
-    if(!list.length) return;
-    const im=new THREE.InstancedMesh(geoM, matM, list.length);
-    list.forEach((p,i)=>{
-      const sc=sMin+Math.random()*(sMax-sMin);
-      dummy.position.set(p.e, p.h+yOff*sc, -p.n);
+  const tmpC=new THREE.Color();
+  function inst(geoM, baseColor, jitter, list, sMin, sMax, yOff){
+    if(!list.length) return null;
+    const im=new THREE.InstancedMesh(geoM,
+      new THREE.MeshStandardMaterial({roughness:0.95}), list.length);
+    list.forEach((pt,i)=>{
+      const sc=pt.s!==undefined?pt.s:(sMin+Math.random()*(sMax-sMin));
+      dummy.position.set(pt.e, pt.h+yOff*sc, -pt.n);
       dummy.scale.set(sc,sc,sc);
       dummy.rotation.y=Math.random()*6.28;
       dummy.updateMatrix(); im.setMatrixAt(i,dummy.matrix);
+      tmpC.set(baseColor);
+      tmpC.offsetHSL((Math.random()-0.5)*0.03,(Math.random()-0.5)*0.15,(Math.random()-0.5)*0.09);
+      im.setColorAt(i,tmpC);
     });
     im.instanceMatrix.needsUpdate=true;
+    if(im.instanceColor) im.instanceColor.needsUpdate=true;
     scene.add(im); decorMeshes.push(im);
+    return im;
   }
-  let hMin=1e9,hMax=-1e9;
-  for(const row of grid.heights) for(const hh of row){hMin=Math.min(hMin,hh);hMax=Math.max(hMax,hh);}
-  if(biome==='plains'||biome==='lake'||biome==='lake_open'||biome==='foothill'){
-    const treeline=hMin+(hMax-hMin)*0.72;
-    scatter(Math.round(620*q), list=>{
-      inst(new THREE.ConeGeometry(3.4,10,6),
-           new THREE.MeshStandardMaterial({color:0x39632f,roughness:1}), list, 0.7, 1.9, 5);
-      inst(new THREE.CylinderGeometry(0.5,0.7,4,5),
-           new THREE.MeshStandardMaterial({color:0x5d4a33,roughness:1}), list, 0.7, 1.9, 2);
-    }, h=>h<treeline);
+  const conifer=(biome!=='plains'&&biome!=='lake');
+  const hasTrees=!biome.startsWith('glacier');
+  if(hasTrees){
+    const trees=floraSample(Math.round(1500*q));
+    // 分配:松树 / 阔叶 按群系比例
+    const pineRatio = biome==='plains'||biome==='lake'?0.25:0.85;
+    const pines=[], leafs=[];
+    trees.forEach(t=>{ t.s=0.7+Math.random()*1.4; (Math.random()<pineRatio?pines:leafs).push(t); });
+    // 松:双层锥 + 干
+    inst(new THREE.ConeGeometry(3.0,7.5,7), '#2f5a33', 1, pines, 0,0, 6.5);
+    inst(new THREE.ConeGeometry(4.0,7,7),  '#37663a', 1, pines, 0,0, 3.2);
+    inst(new THREE.CylinderGeometry(0.5,0.7,3.4,5), '#5d4a33', 1, pines, 0,0, 1.6);
+    // 阔叶:多面体树冠 + 干
+    inst(new THREE.IcosahedronGeometry(4.2,0), '#4d7a35', 1, leafs, 0,0, 6.2);
+    inst(new THREE.CylinderGeometry(0.6,0.9,4.4,5), '#6b5233', 1, leafs, 0,0, 2.2);
+    // 灌木:球簇(两层)
+    const bushes=floraSample(Math.round(950*q));
+    bushes.forEach(b=>b.s=0.5+Math.random()*0.9);
+    inst(new THREE.SphereGeometry(2.4,6,5), '#5d8340', 1, bushes, 0,0, 1.8);
+    const bushes2=bushes.filter(()=>Math.random()<0.6).map(b=>({n:b.n+2.4*b.s,e:b.e+1.5*b.s,h:b.h,s:b.s*0.7}));
+    inst(new THREE.SphereGeometry(2.4,6,5), '#517738', 1, bushes2, 0,0, 1.8);
   }
   if(biome.includes('ridge')||biome.startsWith('plateau')||biome==='foothill'){
-    scatter(Math.round(340*q), list=>{
-      inst(new THREE.DodecahedronGeometry(2.6,0),
-           new THREE.MeshStandardMaterial({color:0x6e675e,roughness:1}), list, 0.6, 2.4, 1);
-    });
+    const rocks=bareSample(Math.round(420*q), (h,f)=>f<0.25);
+    rocks.forEach(r=>r.s=0.5+Math.random()*2.1);
+    inst(new THREE.DodecahedronGeometry(2.6,0), '#6e675e', 1, rocks, 0,0, 0.9);
   }
   if(biome.startsWith('glacier')){
-    scatter(Math.round(260*q), list=>{
-      inst(new THREE.OctahedronGeometry(2.8,0),
-           new THREE.MeshStandardMaterial({color:0xd7ecf7,roughness:0.4,metalness:0.1}),
-           list, 0.5, 2.2, 1.5);
-    });
+    const shards=bareSample(Math.round(300*q), null);
+    shards.forEach(r=>r.s=0.5+Math.random()*1.9);
+    inst(new THREE.OctahedronGeometry(2.8,0), '#cfe8f6', 1, shards, 0,0, 1.4);
+    const rocks=bareSample(Math.round(150*q), null);
+    rocks.forEach(r=>r.s=0.6+Math.random()*1.6);
+    inst(new THREE.DodecahedronGeometry(2.4,0), '#5b636e', 1, rocks, 0,0, 0.8);
   }
 }
 
@@ -939,7 +1016,7 @@ function initWindViz(){
   wpGeo=new THREE.BufferGeometry();
   wpGeo.setAttribute('position', new THREE.BufferAttribute(wpPos,3));
   wpLine=new THREE.LineSegments(wpGeo,
-    new THREE.LineBasicMaterial({color:0xbfe3ff, transparent:true, opacity:0.5}));
+    new THREE.LineBasicMaterial({color:0xcfe7ff, transparent:true, opacity:0.3}));
   wpLine.frustumCulled=false; scene.add(wpLine);
   wpVel=Array.from({length:WP_N},()=>({x:0,y:0,z:0}));
   for(let i=0;i<WP_N;i++) respawnWp(i);
@@ -982,6 +1059,24 @@ const SLOT_CLOUD_TINT=[0xf6d9c0, 0xffffff, 0xf3b98e, 0x3b4660];
 function buildClouds(baseY, slot=1, biome='plains'){
   ensureTex();
   clouds.forEach(c=>scene.remove(c)); clouds=[];
+  if(cirrus){ scene.remove(cirrus); cirrus=null; }
+  if(fogLayer){ scene.remove(fogLayer); fogLayer=null; }
+  // 高层卷云(白天):巨幅半透明噪声层缓慢流动
+  if(slot===1||slot===2){
+    const m=new THREE.MeshBasicMaterial({map:TEX.cloud, transparent:true,
+      opacity:0.16, depthWrite:false, fog:false});
+    m.map=TEX.cloud.clone(); m.map.wrapS=m.map.wrapT=THREE.RepeatWrapping; m.map.repeat.set(6,6);
+    cirrus=new THREE.Mesh(new THREE.PlaneGeometry(30000,30000), m);
+    cirrus.rotation.x=-Math.PI/2; cirrus.position.y=baseY+1600;
+    scene.add(cirrus);
+  }
+  // 清晨谷雾(低地群系)
+  if(slot===0&&(biome==='plains'||biome==='lake'||biome==='foothill')){
+    fogLayer=new THREE.Mesh(new THREE.PlaneGeometry(14000,14000),
+      new THREE.MeshBasicMaterial({color:0xe8ecf2, transparent:true, opacity:0.22, depthWrite:false}));
+    fogLayer.rotation.x=-Math.PI/2; fogLayer.position.y=baseY+14;
+    scene.add(fogLayer);
+  }
   const q=(G&&G.gfxLow)?0.5:1.0;
   const N=Math.round((biome.startsWith('glacier')?10:16)*q);
   const tint=SLOT_CLOUD_TINT[slot];
@@ -1053,9 +1148,11 @@ function initMotes(biome){
   const arr=new Float32Array(MOTE_N*3);
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.BufferAttribute(arr,3));
+  ensureTex();
   motes=new THREE.Points(g,new THREE.PointsMaterial({
-    color:snowy?0xffffff:0xd8dcc2, size:snowy?1.7:0.9,
-    transparent:true, opacity:snowy?0.9:0.55, depthWrite:false}));
+    color:snowy?0xffffff:0xdfe3cc, size:snowy?2.2:1.3, map:TEX.dot,
+    transparent:true, opacity:snowy?0.85:0.42, depthWrite:false,
+    alphaTest:0.05}));
   motes.frustumCulled=false; scene.add(motes);
   moteVel=Array.from({length:MOTE_N},()=>({x:0,y:snowy?-1.2:0,z:0}));
   prevShipPos=null;
@@ -1084,7 +1181,33 @@ function updateMotes(dt, windThree){
   }
   motes.geometry.attributes.position.needsUpdate=true;
 }
+function updateAtmoDrift(dt){
+  atmoT+=dt;
+  const drift=[+0.55,+0.12,-0.5,0][atmoSlot];        // °/min:黎明升、黄昏落
+  if(!drift||!sky) return;
+  const su=SLOT_SUN[atmoSlot];
+  const el=su.el+drift*atmoT/60;
+  const phi=THREE.MathUtils.degToRad(90-el), theta=THREE.MathUtils.degToRad(su.az);
+  const sp=new THREE.Vector3().setFromSphericalCoords(1,phi,theta);
+  sky.material.uniforms.sunPosition.value.copy(sp);
+  sunLight.position.copy(sp).multiplyScalar(8000);
+  if(atmoSlot===0){                                   // 日出:光线转白变亮
+    const k=Math.min(Math.max(el/28,0),1);
+    sunLight.color.setHex(0xffd9b0).lerp(new THREE.Color(0xffffff),k);
+    sunLight.intensity=2.6-0.8*k+0.0*k;
+    renderer.toneMappingExposure=0.75+0.2*k;
+    stars.material.opacity=Math.max(0,0.18*(1-el/14));
+  }
+  if(atmoSlot===2){                                   // 日落:更红更暗
+    const k=Math.min(Math.max((8-el)/16,0),1);
+    sunLight.color.setHex(0xffb47a).lerp(new THREE.Color(0xd96a3b),k*0.7);
+    renderer.toneMappingExposure=Math.max(0.45,0.72-0.2*k);
+    stars.material.opacity=Math.min(0.7,k*0.7);
+  }
+}
 function updateVisuals(dt, st){
+  updateAtmoDrift(dt);
+  if(cirrus){ cirrus.material.map.offset.x+=dt*0.0018; }
   if(waterMesh){ TEX.waterN.offset.x+=dt*0.013; TEX.waterN.offset.y+=dt*0.009; }
   if(shadowBlob&&legSpec){
     const n=-ship.position.z, e=ship.position.x;
@@ -1219,7 +1342,7 @@ function renderFlight(st, dt=0.016){
   const wv=new THREE.Vector3().fromArray(st.wind_three), wl=wv.length();
   windArrow.position.set(ship.position.x, ship.position.y+legSpec.ship.envelope.dia_m*1.2, ship.position.z);
   windArrow.visible=wl>0.3;
-  if(windArrow.visible){ windArrow.setDirection(wv.normalize()); windArrow.setLength(wl*6,10,5); }
+  if(windArrow.visible){ windArrow.setDirection(wv.normalize()); windArrow.setLength(wl*4,7,3.5); }
   renderer.render(scene,camera);
   // HUD
   const relBearing=((st.dest_bearing_deg-st.yaw_deg)%360+540)%360-180;

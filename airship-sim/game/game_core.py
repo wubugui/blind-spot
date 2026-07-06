@@ -18,7 +18,7 @@ from airship_sim.added_mass import lamb_k_factors
 from airship_sim.config import GRAVITY_M_S2, AtmosphereConfig
 from airship_sim.dynamics import (IDX_OMEGA, IDX_POS, IDX_QUAT, IDX_THRUST,
                                   IDX_VEL, build_mass_properties)
-from airship_sim.ground import AnalyticTerrain
+from airship_sim.ground import AnalyticTerrain, WorldTerrain
 from airship_sim.math3d import quat_from_euler, quat_to_euler, wrap_angle_rad
 from airship_sim.presets_crewed import crewed_config, retune_gains
 from airship_sim.simulation import Simulation
@@ -87,7 +87,12 @@ class Leg:
         retune_gains(cfg, 5.0)
         self.cfg = cfg
 
-        self.terrain = AnalyticTerrain(spec.get("terrain") or {})
+        # 景观地形(烘焙式,物理与渲染同源):注入群系/种子/航线走廊
+        tspec = dict(spec.get("terrain") or {})
+        tspec.setdefault("biome", spec.get("biome_hint", "plains"))
+        tspec.setdefault("seed", int(spec.get("seed", 0)))
+        tspec["route"] = spec["route"]
+        self.terrain = WorldTerrain(tspec)
         self.sim = Simulation(cfg, terrain=self.terrain)
 
         # ---- 起终点与初始姿态(迎风)----
@@ -175,7 +180,10 @@ class Leg:
                     v_w = quat_to_rotmat(quat_normalize(self.sim.x[IDX_QUAT])) \
                         @ self.sim.x[IDX_VEL]
                     v_g = max(float(np.hypot(v_w[0], v_w[1])), abs(self.speed_target), 2.0)
-                    look = 30.0 * v_g
+                    # 前视收缩:接近目的地时不为"驿站背后"的地形爬高(实测那会
+                    # 让高度设定与进场下降打架,悬在站顶 85m 下不来)
+                    dist_dest = float(np.hypot(*(self.dest - p[0:2])))
+                    look = min(30.0 * v_g, max(dist_dest, 150.0))
                     hn = self.terrain.height_m(float(p[0]), float(p[1]))
                     ha = max(self.terrain.height_m(
                                  float(p[0] + f * look * math.cos(yaw_now)),
@@ -188,7 +196,6 @@ class Leg:
                     # 进场模式:接近目的地时允许把高度设定"降"下来(平时只升不降;
                     # 到站判定需要 AGL<60,不降的话船会悬在站顶傻等——实测 4 条
                     # 航线因此超时)。下降坡度限制在安全余量内。
-                    dist_dest = float(np.hypot(*(self.dest - p[0:2])))
                     if dist_dest < 1200.0:
                         h_dest = self.terrain.height_m(float(self.dest[0]),
                                                        float(self.dest[1]))
@@ -208,9 +215,10 @@ class Leg:
                                  * float(np.clip(1.0 - v_lat / 6.0, 0.4, 1.0)))
 
                     def _pred(tt):
+                        dd = min(tt * v_g, max(dist_dest, 120.0))
                         hh = self.terrain.height_m(
-                            float(p[0] + tt * v_g * math.cos(yaw_now)),
-                            float(p[1] + tt * v_g * math.sin(yaw_now)))
+                            float(p[0] + dd * math.cos(yaw_now)),
+                            float(p[1] + dd * math.sin(yaw_now)))
                         return (-float(p[2]) + climb_cap * tt) - hh - 35.0
                     # 双时距预测:30s 视界让"刹车+爬升"发生在坡前而不是坡上
                     pred = min(_pred(15.0), _pred(30.0))
@@ -369,23 +377,8 @@ class Leg:
         }
 
     def terrain_grid(self, half_n: float, half_e: float, res: int) -> dict:
-        """以航段中点为中心导出高度网格(渲染用)+ 水面掩码。"""
-        c = 0.5 * (self.start + self.dest)
-        ns = np.linspace(c[0] - half_n, c[0] + half_n, res)
-        es = np.linspace(c[1] - half_e, c[1] + half_e, res)
-        hs, wat = [], []
-        for nn in ns:
-            row_h, row_w = [], []
-            for ee in es:
-                row_h.append(round(self.terrain.height_m(nn, ee), 2))
-                row_w.append(1 if self.terrain.is_water(nn, ee) else 0)
-            hs.append(row_h)
-            wat.append(row_w)
-        return {"center_n": float(c[0]), "center_e": float(c[1]),
-                "half_n": half_n, "half_e": half_e, "res": res,
-                "heights": hs, "water": wat,
-                "start": [float(self.start[0]), float(self.start[1])],
-                "dest": [float(self.dest[0]), float(self.dest[1])]}
+        """导出景观网格(近景高度/水面/植被密度 + 远景雪山)。"""
+        return self.terrain.export_grids(near_res=int(res))
 
 
 # ---------- 机库评级(解析,即时) ----------
@@ -523,7 +516,7 @@ def make_leg_env(params: dict) -> dict:
     grade = d_alt / dist
     az_down = (az + 180.0) % 360.0 if d_alt >= 0 else az
 
-    terrain = {"base_m": 0.0,
+    terrain = {"base_m": 0.0, "biome": biome, "seed": seed,
                "slope": {"azimuth_deg": az_down, "grade": abs(grade)},
                "hills": {"amp_m": 4.0, "wavelength_m": 600.0, "seed": seed % 97}}
     wf = None
