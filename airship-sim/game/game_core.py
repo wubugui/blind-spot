@@ -159,16 +159,62 @@ class Leg:
                 factor = float(np.clip(1.0 - yaw_err / 0.6, 0.0, 1.0))
                 sp.speed_m_s = self.speed_target * factor
                 if self.terrain_assist:
-                    # 地形保持:当前 + 前视(≈12s 航程)地形上方 ≥28m,设定只升不降
+                    # 地形保持(多轮实测收敛的最终形态):
+                    #  A. 前视 ~30s 地速,高度设定 = 前方最高地形 + 自适应跨越余量。
+                    #     余量按总爬升量给(前方越高越从高处跨):山口加速风集中在
+                    #     脊面上方 ~120m,贴脊穿越会泡在最强风带里被吹撞;
+                    #     长坡上这只是"沿坡高飞",无害。
+                    #  B. 长坡巡航:仅按实际余隙温和限速(风感知刹车在这里会把
+                    #     顺风爬坡踩成永久蠕行——foothill 超时的根源)。
+                    #  C. 障碍模式(15s 预测余隙 <0,按侧滑折损后的保守爬升
+                    #     0.8 m/s 预测):限"地面接近速度"——顺风时把空速收到 1
+                    #     只会变成风中落叶(实测 v_horiz 8.9 撞毁);空速指令 =
+                    #     允许接近速度 − 顺航向风分量,可为负(顶风倒车刹停)。
                     p = self.sim.x[IDX_POS]
-                    look = 12.0 * max(abs(self.speed_target), 2.0)
+                    from airship_sim.math3d import quat_to_rotmat, quat_normalize
+                    v_w = quat_to_rotmat(quat_normalize(self.sim.x[IDX_QUAT])) \
+                        @ self.sim.x[IDX_VEL]
+                    v_g = max(float(np.hypot(v_w[0], v_w[1])), abs(self.speed_target), 2.0)
+                    look = 30.0 * v_g
                     hn = self.terrain.height_m(float(p[0]), float(p[1]))
-                    ha = self.terrain.height_m(
-                        float(p[0] + look * math.cos(yaw_now)),
-                        float(p[1] + look * math.sin(yaw_now)))
-                    need = max(hn, ha) + 28.0
+                    ha = max(self.terrain.height_m(
+                                 float(p[0] + f * look * math.cos(yaw_now)),
+                                 float(p[1] + f * look * math.sin(yaw_now)))
+                             for f in (0.35, 0.5, 0.75, 1.0, 1.5, 2.0))
+                    clearance = 35.0 + min(0.9 * max(ha - hn, 0.0), 110.0)
+                    need = ha + clearance
                     if sp.altitude_m < need:
-                        sp.altitude_m = min(sp.altitude_m + 0.8, need)
+                        sp.altitude_m = min(sp.altitude_m + 2.0, need)
+                    agl = -float(p[2]) - hn
+                    # 爬升能力随状态估计:浮力盈余给"免费爬升",侧滑(蟹行)
+                    # 经横流耦合放大垂直阻力、把爬升能力砍到 1/3(真实物理,
+                    # 实测:顺风长坡上按 0.8 保守值预测会把 2.5 m/s 的船
+                    # 误刹成蠕行;横风山脊上按净空值预测又会撞脊)
+                    atm_now = self.sim.atmosphere.get_state(p, self.sim.t_s)
+                    lift_kg = (atm_now.rho_kg_m3 * self.cfg.hull.volume_m3
+                               - self.sim.dynamics.props.m_total_kg)
+                    v_lat = abs(float(self.sim.x[IDX_VEL][1]))
+                    climb_cap = (float(np.clip(0.8 + lift_kg / 40.0, 0.8, 3.0))
+                                 * float(np.clip(1.0 - v_lat / 6.0, 0.4, 1.0)))
+
+                    def _pred(tt):
+                        hh = self.terrain.height_m(
+                            float(p[0] + tt * v_g * math.cos(yaw_now)),
+                            float(p[1] + tt * v_g * math.sin(yaw_now)))
+                        return (-float(p[2]) + climb_cap * tt) - hh - 35.0
+                    # 双时距预测:30s 视界让"刹车+爬升"发生在坡前而不是坡上
+                    pred = min(_pred(15.0), _pred(30.0))
+                    f1 = float(np.clip((agl - 12.0) / 48.0, 0.15, 1.0))
+                    if pred < 0.0:
+                        f2 = float(np.clip((pred + 40.0) / 40.0, 0.15, 1.0))
+                        atm_w = atm_now.wind_ned_m_s
+                        wind_along = (float(atm_w[0]) * math.cos(yaw_now)
+                                      + float(atm_w[1]) * math.sin(yaw_now))
+                        u_cmd = float(np.clip(self.speed_target * min(f1, f2) - wind_along,
+                                              -3.0, self.speed_target))
+                        sp.speed_m_s = min(sp.speed_m_s, u_cmd)
+                    else:
+                        sp.speed_m_s = min(sp.speed_m_s, self.speed_target * f1)
             self.sim.step(record=False)
             if self.sim.tick % 20 == 0:                    # 10Hz 判定到站/坠毁
                 if self._check_end():
@@ -492,20 +538,22 @@ def make_leg_env(params: dict) -> dict:
         turb = 0.35
         note.append(f"谷风约 {u} m/s,持续爬升 {d_alt:.0f} m")
     elif biome in ("ridge", "ridge_high"):
-        u = [5, 7, 6, 4][slot]
-        ridge_h = 90.0 if biome == "ridge" else 130.0
+        # 风取斜侧向(az+50°):顺风正压山会把零空速的船推进坡里,无解;
+        # 真实山地飞行也是迎风/斜风过脊。脊坡放缓到船的爬升能力内。
+        u = [3.5, 4.5, 4.0, 3.0][slot]
+        ridge_h = 50.0 if biome == "ridge" else 70.0
         cn = (dist / 2) * math.cos(math.radians(az))
         ce = (dist / 2) * math.sin(math.radians(az))
         terrain["ridges"] = [{"center_n": cn, "center_e": ce,
                               "axis_deg": (az + 90) % 360,
-                              "height_m": ridge_h, "halfwidth_m": 260.0}]
+                              "height_m": ridge_h, "halfwidth_m": 450.0}]
         wf = {"kind": "ridge",
               "base": {"kind": "loglaw", "params": {"u_ref_m_s": u,
-                       "dir_to_deg": az, "z0_m": 0.05}},
+                       "dir_to_deg": (az + 50) % 360, "z0_m": 0.05}},
               "params": {"crest_ne_m": [cn, ce], "ridge_axis_deg": (az + 90) % 360,
-                         "height_m": ridge_h, "halfwidth_m": 260.0,
+                         "height_m": ridge_h, "halfwidth_m": 450.0,
                          "z_influence_m": 120.0,
-                         "lee_recirc_frac": 0.35 if slot == 1 else 0.2}}
+                         "lee_recirc_frac": 0.3 if slot == 1 else 0.18}}
         turb = 0.5
         note.append(f"风门:脊顶顺风加速(基础 {u} m/s),背风面有回流")
     elif biome in ("plateau_climb", "plateau"):
@@ -579,11 +627,11 @@ WORLD = {
         {"a": "mailang", "b": "yinhu", "dist": 2200, "biome": "lake"},
         {"a": "fengche", "b": "yinhu", "dist": 2400, "biome": "lake"},
         {"a": "yinhu", "b": "shuangyu", "dist": 2400, "biome": "lake_open"},
-        {"a": "yinhu", "b": "aikou", "dist": 4800, "biome": "foothill"},
-        {"a": "shuangyu", "b": "aikou", "dist": 4000, "biome": "foothill"},
-        {"a": "aikou", "b": "yingling", "dist": 4000, "biome": "ridge"},
-        {"a": "yingling", "b": "yunti", "dist": 4200, "biome": "ridge_high"},
-        {"a": "yunti", "b": "shidian", "dist": 4800, "biome": "plateau_climb"},
+        {"a": "yinhu", "b": "aikou", "dist": 6000, "biome": "foothill"},
+        {"a": "shuangyu", "b": "aikou", "dist": 5200, "biome": "foothill"},
+        {"a": "aikou", "b": "yingling", "dist": 5200, "biome": "ridge"},
+        {"a": "yingling", "b": "yunti", "dist": 5400, "biome": "ridge_high"},
+        {"a": "yunti", "b": "shidian", "dist": 6000, "biome": "plateau_climb"},
         {"a": "shidian", "b": "jingfan", "dist": 2600, "biome": "plateau"},
         {"a": "jingfan", "b": "bingshe", "dist": 2800, "biome": "glacier_app"},
         {"a": "bingshe", "b": "jiguang", "dist": 3000, "biome": "glacier"},

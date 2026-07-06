@@ -23,7 +23,7 @@ SHIPS = {
              "battery": {"wh": 20000, "mass_kg": 100}},
     "mid":  {"envelope": {"len_m": 30, "dia_m": 9.6, "skin_kg": 200},
              "fins": {"s_m2": 48, "mass_kg": 95},
-             "motor": {"t_max_N": 300, "mass_kg": 110, "disc_m2": 4.5},
+             "motor": {"t_max_N": 450, "mass_kg": 160, "disc_m2": 5.7},
              "battery": {"wh": 20000, "mass_kg": 100}},
     "top":  {"envelope": {"len_m": 35, "dia_m": 11.2, "skin_kg": 290},
              "fins": {"s_m2": 48, "mass_kg": 95},
@@ -64,16 +64,18 @@ def fly(from_id: str, to_id: str, slot: int, verbose: bool = False) -> dict:
             "seed": 11}
     gc.start_leg(json.dumps(spec))
     gc.leg_command(json.dumps({"type": "cruise", "on": True, "speed": 8.0}))
-    cap_s = leg["dist"] / 4.0 + 420.0 + abs(d_alt) * 0.6
+    cap_s = leg["dist"] / 3.5 + 520.0 + abs(d_alt) * 0.8
     st = None
     t0 = time.time()
     while True:
         gc.leg_step(2000)                       # 10 仿真秒
         st = json.loads(gc.leg_state())
-        # 简单的下降策略(玩家同款):明显高于目的地且偏轻 → 放氦
-        agl_over = st["agl_m"] - 60.0
-        if d_alt < -200 and agl_over > 120 and st["net_lift_kg"] > -25:
+        # 下降策略(玩家同款 V 键):高于目的地且偏轻 → 放氦
+        if d_alt < -200 and st["agl_m"] > 180 and st["net_lift_kg"] > -25:
             gc.leg_command(json.dumps({"type": "vent_helium", "kg": 12}))
+        # 到站悬高:接近目的地但下不来(近中性/偏轻)→ 放氦压高度
+        if st["dest_dist_m"] < 600 and st["agl_m"] > 75 and st["net_lift_kg"] > -10:
+            gc.leg_command(json.dumps({"type": "vent_helium", "kg": 8}))
         if verbose:
             print(f"    t={st['t_s']:5.0f} dist={st['dest_dist_m']:6.0f} agl={st['agl_m']:5.0f} "
                   f"u={st['u_m_s']:4.1f} lift={st['net_lift_kg']:+6.0f} batt={st['battery_frac']*100:3.0f}%")

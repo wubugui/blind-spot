@@ -72,7 +72,8 @@ def test_crash_on_steep_impact():
                                    "halfwidth_m": 150.0}]}
     spec["route"]["fly_alt_agl_m"] = 30.0
     gc.start_leg(json.dumps(spec))
-    # 直冲山脊:锁高度 30m(山有 120m),全速
+    # 直冲山脊:关闭地形保持辅助(默认开,会爬坡避撞),锁 30m 全速(山 120m)
+    gc.leg_command(json.dumps({"type": "assist", "on": False}))
     gc.leg_command(json.dumps({"type": "cruise", "on": True, "speed": 12.0}))
     for _ in range(30):                      # 30×5s = 150 仿真秒
         gc.leg_step(1000)
