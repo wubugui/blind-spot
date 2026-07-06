@@ -797,6 +797,238 @@ function terrainColor(biome,h,hMin,span,slope,nz,waterLevel){
   return c;
 }
 
+/* ================================================================
+   FFT 海洋:Tessendorf 谱合成(Phillips 风谱)于 Web Worker,
+   次表面散射水体着色器。波浪由当前航段真实风驱动。
+   ================================================================ */
+const OCEAN_N=128, OCEAN_PATCH=320.0;
+let oceanWorker=null, oceanBusy=false, oceanT0=performance.now();
+let texWaveH=null, texWaveN=null, oceanMat=null, oceanAmp=0.5;
+
+const OCEAN_WORKER_SRC = `
+const G=9.81;
+let N=128, L=320, h0r=null, h0i=null, omg=null, kx=null, kz=null, scale=1.0;
+function synth(t){
+  const re=new Float32Array(N*N), im=new Float32Array(N*N);
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const idx=i*N+j;
+    const i2=(N-i)%N, j2=(N-j)%N, idm=i2*N+j2;     // 共轭镜像 → 实值场
+    const c=Math.cos(omg[idx]*t), s=Math.sin(omg[idx]*t);
+    const ar=h0r[idx], ai=h0i[idx], br=h0r[idm], bi=-h0i[idm];
+    // h = h0 e^{iωt} + conj(h0(-k)) e^{-iωt}
+    re[idx]=ar*c-ai*s + br*c + bi*s;
+    im[idx]=ar*s+ai*c - br*s + bi*c;
+  }
+  fft2(re,im,true);
+  const h=new Float32Array(N*N);
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const sgn=((i+j)&1)?-1:1;                       // 中心化棋盘符号
+    h[i*N+j]=re[i*N+j]*sgn;
+  }
+  return h;
+}
+function rnd(){ let u=0,v=0; while(!u)u=Math.random(); while(!v)v=Math.random();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }   // 高斯
+function fft1(re,im,off,stride,n,inv){
+  // 迭代基2 FFT(位逆序 + 蝶形)
+  for(let i=1,j=0;i<n;i++){
+    let bit=n>>1;
+    for(;j&bit;bit>>=1) j^=bit;
+    j^=bit;
+    if(i<j){ const a=off+i*stride,b=off+j*stride;
+      let t=re[a];re[a]=re[b];re[b]=t; t=im[a];im[a]=im[b];im[b]=t; }
+  }
+  for(let len=2;len<=n;len<<=1){
+    const ang=(inv?2:-2)*Math.PI/len, wr=Math.cos(ang), wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let cr=1, ci=0;
+      for(let k=0;k<len/2;k++){
+        const a=off+(i+k)*stride, b=off+(i+k+len/2)*stride;
+        const xr=re[b]*cr-im[b]*ci, xi=re[b]*ci+im[b]*cr;
+        re[b]=re[a]-xr; im[b]=im[a]-xi;
+        re[a]+=xr; im[a]+=xi;
+        const ncr=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=ncr;
+      }
+    }
+  }
+}
+function fft2(re,im,inv){
+  for(let r=0;r<N;r++) fft1(re,im,r*N,1,N,inv);
+  for(let c=0;c<N;c++) fft1(re,im,c,N,N,inv);
+}
+onmessage=(ev)=>{
+  const m=ev.data;
+  if(m.type==='init'){
+    N=m.N; L=m.L;
+    const V=Math.max(m.wind,2.0), Lw=V*V/G;
+    const dirx=Math.cos(m.windDir), dirz=Math.sin(m.windDir);
+    h0r=new Float32Array(N*N); h0i=new Float32Array(N*N);
+    omg=new Float32Array(N*N); kx=new Float32Array(N*N); kz=new Float32Array(N*N);
+    const A=3.0e-3, small=1.2;
+    for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+      const n2=i<N/2?i:i-N, m2=j<N/2?j:j-N;
+      const KX=2*Math.PI*n2/L, KZ=2*Math.PI*m2/L;
+      const k=Math.hypot(KX,KZ), idx=i*N+j;
+      kx[idx]=KX; kz[idx]=KZ;
+      if(k<1e-6){ omg[idx]=0; continue; }
+      omg[idx]=Math.sqrt(G*k);
+      const dk=(KX*dirx+KZ*dirz)/k;
+      let P=A*Math.exp(-1/((k*Lw)*(k*Lw)))/Math.pow(k,4)*dk*dk;
+      P*=Math.exp(-k*k*small*small);
+      if(dk<0) P*=0.25;                       // 逆风波抑制
+      const a=Math.sqrt(P/2);
+      h0r[idx]=rnd()*a; h0i[idx]=rnd()*a;
+    }
+    // 物理自标定:目标有效波高 Hs≈0.21·V²/g(全展海况),std≈Hs/4;
+    // 用 t=0 合成场的实测 std 求缩放,吸收 FFT 归一化约定差异
+    scale=1.0;
+    const h0f=synth(0.0);
+    let s2=0; for(const v of h0f) s2+=v*v;
+    const std0=Math.sqrt(s2/(N*N));
+    const target=Math.max(0.21*V*V/G, 0.12)/4.0;
+    if(std0>1e-9) scale=target/std0;
+    postMessage({type:'ready'});
+    return;
+  }
+  if(m.type==='step'&&h0r){
+    const h=synth(m.t);
+    for(let i=0;i<h.length;i++) h[i]*=scale;
+    // 法线:有限差分
+    const nrm=new Float32Array(N*N*4), cell=L/N;
+    for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+      const ip=(i+1)%N, iM=(i+N-1)%N, jp=(j+1)%N, jm=(j+N-1)%N;
+      const dx=(h[ip*N+j]-h[iM*N+j])/(2*cell)*m.amp;
+      const dz=(h[i*N+jp]-h[i*N+jm])/(2*cell)*m.amp;
+      const inv=1/Math.hypot(dx,1,dz), o=(i*N+j)*4;
+      nrm[o]=(-dx*inv)*0.5+0.5; nrm[o+1]=(1*inv)*0.5+0.5;
+      nrm[o+2]=(-dz*inv)*0.5+0.5; nrm[o+3]=1;
+    }
+    postMessage({type:'field', h:h.buffer, nrm:nrm.buffer}, [h.buffer, nrm.buffer]);
+  }
+};`;
+
+function initOcean(windSpd, windDirRad){
+  if(oceanWorker){ oceanWorker.terminate(); oceanWorker=null; }
+  oceanAmp=1.0;   // 波高已在 worker 内按 Hs(V) 物理标定(米制)
+  try{
+    const blob=new Blob([OCEAN_WORKER_SRC],{type:'text/javascript'});
+    oceanWorker=new Worker(URL.createObjectURL(blob));
+    oceanWorker.onmessage=(ev)=>{
+      const m=ev.data;
+      if(m.type==='ready'){ oceanBusy=false; return; }
+      if(m.type==='field'){
+        const h=new Float32Array(m.h), nrm=new Float32Array(m.nrm);
+        if(!texWaveH){
+          texWaveH=new THREE.DataTexture(h, OCEAN_N, OCEAN_N, THREE.RedFormat, THREE.FloatType);
+          texWaveN=new THREE.DataTexture(nrm, OCEAN_N, OCEAN_N, THREE.RGBAFormat, THREE.FloatType);
+          for(const t of [texWaveH,texWaveN]){
+            t.wrapS=t.wrapT=THREE.RepeatWrapping;
+            t.magFilter=t.minFilter=THREE.LinearFilter;
+            t.needsUpdate=true;
+          }
+          if(oceanMat){ oceanMat.uniforms.tHeight.value=texWaveH;
+                        oceanMat.uniforms.tNormal.value=texWaveN; }
+        } else {
+          texWaveH.image.data.set(h); texWaveN.image.data.set(nrm);
+          texWaveH.needsUpdate=true; texWaveN.needsUpdate=true;
+        }
+        oceanBusy=false;
+      }
+    };
+    oceanBusy=true;
+    oceanWorker.postMessage({type:'init', N:OCEAN_N, L:OCEAN_PATCH,
+      wind:windSpd, windDir:windDirRad, amp:oceanAmp});
+  }catch(e){ oceanWorker=null; console.warn('ocean worker unavailable', e); }
+}
+function tickOcean(){
+  if(oceanWorker&&!oceanBusy){
+    oceanBusy=true;
+    oceanWorker.postMessage({type:'step', t:(performance.now()-oceanT0)/1000*0.8,
+      amp:oceanAmp});
+  }
+}
+
+function makeOceanMaterial(){
+  ensureTex();
+  const mat=new THREE.ShaderMaterial({
+    transparent:true,
+    uniforms:{
+      tHeight:{value:texWaveH}, tNormal:{value:texWaveN}, tDetail:{value:TEX.waterN},
+      uAmp:{value:oceanAmp}, uPatch:{value:OCEAN_PATCH}, uTime:{value:0},
+      uSunDir:{value:new THREE.Vector3(0.4,0.8,0.2)},
+      uSunColor:{value:new THREE.Color(0xfff2dd)},
+      uSkyColor:{value:new THREE.Color(0x9db8d8)},
+      uDeepColor:{value:new THREE.Color(0x0e3c58)},
+      uShallowColor:{value:new THREE.Color(0x2e7d86)},
+      uSssColor:{value:new THREE.Color(0x1ba58e)},
+      uCamPos:{value:new THREE.Vector3()},
+      uExposure:{value:1.0},
+    },
+    vertexShader:`
+      uniform sampler2D tHeight;
+      uniform float uAmp, uPatch;
+      attribute float depth;
+      varying vec3 vWorld; varying float vDepth, vWave; varying vec2 vUvW;
+      void main(){
+        vec4 wp = modelMatrix * vec4(position,1.0);
+        vUvW = wp.xz / uPatch;
+        float damp = clamp(depth/3.0, 0.12, 1.0);
+        float h = 0.0;
+        #ifdef USE_WAVES
+        h = texture2D(tHeight, vUvW).r * uAmp * damp;
+        #endif
+        wp.y += h;
+        vWave = h; vDepth = depth; vWorld = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader:`
+      uniform sampler2D tNormal, tDetail;
+      uniform vec3 uSunDir, uSunColor, uSkyColor, uDeepColor, uShallowColor, uSssColor, uCamPos;
+      uniform float uTime, uAmp;
+      varying vec3 vWorld; varying float vDepth, vWave; varying vec2 vUvW;
+      void main(){
+        vec3 nW = vec3(0.0,1.0,0.0);
+        #ifdef USE_WAVES
+        nW = texture2D(tNormal, vUvW).xyz*2.0-1.0;
+        #endif
+        vec3 d1 = texture2D(tDetail, vWorld.xz*0.11 + vec2(uTime*0.016, uTime*0.011)).xyz*2.0-1.0;
+        vec3 d2 = texture2D(tDetail, vWorld.xz*0.041 - vec2(uTime*0.009, uTime*0.013)).xyz*2.0-1.0;
+        vec3 N = normalize(vec3(nW.x + 0.45*d1.x + 0.3*d2.x,
+                                1.0,
+                                nW.z + 0.45*d1.y + 0.3*d2.y));
+        vec3 V = normalize(uCamPos - vWorld);
+        vec3 L = normalize(uSunDir);
+        float fres = 0.02 + 0.98*pow(1.0 - max(dot(N,V),0.0), 5.0);
+        // 深浅水体色
+        vec3 base = mix(uShallowColor, uDeepColor, clamp(vDepth/7.0, 0.0, 1.0));
+        // 次表面散射:逆光透过浪峰(视线迎着折入水中的阳光 × 浪高 × 薄度)
+        vec3 Lt = normalize(-L + vec3(0.0,-0.35,0.0));
+        float sss = pow(max(dot(V, Lt), 0.0), 3.5)
+                  * clamp(vWave/(uAmp*0.65+0.001)*0.5+0.5, 0.0, 1.0)
+                  * clamp(1.0 - vDepth*0.08, 0.35, 1.0);
+        base += uSssColor * sss * (1.0-fres) * 1.6;
+        // 天空反射 + 太阳高光
+        vec3 refl = uSkyColor * (0.85 + 0.3*max(N.y,0.0));
+        float spec = pow(max(dot(reflect(-L, N), V), 0.0), 240.0);
+        vec3 col = mix(base, refl, fres) + uSunColor * spec * 2.0;
+        // 岸线泡沫(浅水带 + 噪声 + 时间脉动)
+        float band = 1.0 - smoothstep(0.15, 1.7, vDepth);
+        float fn = (texture2D(tDetail, vWorld.xz*0.06 + vec2(uTime*0.012)).x*2.0-1.0);
+        float foam = band * smoothstep(0.15, 0.55, fn*0.5+0.5 + 0.35*sin(uTime*1.4 + vDepth*5.0));
+        // 浪峰白沫
+        foam += smoothstep(uAmp*0.72, uAmp*1.05, vWave) * 0.5;
+        col = mix(col, vec3(0.93,0.96,0.97), clamp(foam,0.0,0.85));
+        float alpha = mix(0.88, 0.985, fres);
+        alpha *= smoothstep(-0.15, 0.4, vDepth);
+        gl_FragColor = vec4(col, alpha);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  if(texWaveH) mat.defines={USE_WAVES:''};
+  return mat;
+}
+
 let waterMesh=null, farMesh=null, shadowBlob=null, decorMeshes=[], cirrus=null, fogLayer=null;
 function buildTerrain(grid, biome, slot){
   ensureTex();
@@ -852,20 +1084,20 @@ function buildTerrain(grid, biome, slot){
     const wgeo=new THREE.PlaneGeometry(he*2, hn*2, res-1, res-1);
     wgeo.rotateX(-Math.PI/2);
     const wpos=wgeo.attributes.position;
+    const depths=new Float32Array(wpos.count);
     for(let i=0;i<wpos.count;i++){
       const ix=i%res, iz=Math.floor(i/res);
       const nIdx=res-1-iz, eIdx=ix;
       const wl=WH[nIdx][eIdx];
-      wpos.setY(i, wl!==null? wl+0.15 : grid.heights[nIdx][eIdx]-9);
+      if(wl!==null){ wpos.setY(i, wl+0.12); depths[i]=wl-grid.heights[nIdx][eIdx]; }
+      else { wpos.setY(i, grid.heights[nIdx][eIdx]-9); depths[i]=-1.0; }
     }
-    wgeo.computeVertexNormals();
-    waterMesh=new THREE.Mesh(wgeo, new THREE.MeshPhongMaterial({
-      color:0x2a5f86, specular:0xcfe4f4, shininess:130, transparent:true,
-      opacity:0.9, normalMap:TEX.waterN, normalScale:new THREE.Vector2(0.5,0.5)}));
-    waterMesh.material.normalMap.repeat.set(34,34);
+    wgeo.setAttribute('depth', new THREE.BufferAttribute(depths,1));
+    oceanMat=makeOceanMaterial();
+    waterMesh=new THREE.Mesh(wgeo, oceanMat);
     waterMesh.position.set(grid.center_e,0,-grid.center_n);
     scene.add(waterMesh);
-  }
+  } else { oceanMat=null; }
   buildFarTerrain(grid, biome);
   buildDecor(grid, biome);
   if(!shadowBlob){
@@ -1224,7 +1456,18 @@ function updateAtmoDrift(dt){
 function updateVisuals(dt, st){
   updateAtmoDrift(dt);
   if(cirrus){ cirrus.material.map.offset.x+=dt*0.0018; }
-  if(waterMesh){ TEX.waterN.offset.x+=dt*0.013; TEX.waterN.offset.y+=dt*0.009; }
+  if(oceanMat){
+    tickOcean();
+    if(texWaveH && !oceanMat.defines){ oceanMat.defines={USE_WAVES:''}; oceanMat.needsUpdate=true;
+      oceanMat.uniforms.tHeight.value=texWaveH; oceanMat.uniforms.tNormal.value=texWaveN; }
+    const u=oceanMat.uniforms;
+    u.uTime.value+=dt;
+    u.uAmp.value=oceanAmp;
+    u.uSunDir.value.copy(sunLight.position).normalize();
+    u.uSunColor.value.copy(sunLight.color).multiplyScalar(Math.min(sunLight.intensity,2.0));
+    if(scene.fog) u.uSkyColor.value.copy(scene.fog.color);
+    u.uCamPos.value.copy(camera.position);
+  }
   if(shadowBlob&&legSpec){
     const n=-ship.position.z, e=ship.position.x;
     const h=heightAt(curGrid, n, e);
@@ -1250,6 +1493,14 @@ function startLeg(fromId,toId,slot){
   // 出发即给初始油门:玩家从第 0 秒就该感到"我在动"
   pyJson('leg_command',{type:'adjust', d_speed:6});
   curGrid=grid;
+  {  // FFT 海洋随该航段真实风初始化(波向=风向)
+    const w=legSpec.env.wind_field;
+    let spd=4, dir=0;
+    if(w&&w.params){ spd=w.params.u_ref_m_s||w.params.u10_m_s||w.params.peak_speed_m_s||4;
+                     dir=(w.params.dir_to_deg??w.params.onshore_dir_deg??w.params.downhill_azimuth_deg??0); }
+    // NED 方位 → three xz 平面角:x=E=sin(az), z=-N=-cos(az)
+    initOcean(spd, Math.atan2(-Math.cos(dir*Math.PI/180), Math.sin(dir*Math.PI/180)));
+  }
   initWindViz();
   initMotes(legSpec.meta.biome);
   const h0=heightAt(grid, 0, 0);
