@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>风程 — 飞艇旅途</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#10131a; color:#d8dee8; font-family:ui-monospace,Menlo,Consolas,monospace; overflow:hidden; }
+  .screen { position:fixed; inset:0; display:none; }
+  .screen.active { display:block; }
+  button { background:#2c3440; color:#d8dee8; border:1px solid #3a4250; border-radius:5px; padding:6px 14px; margin:2px; cursor:pointer; font-family:inherit; font-size:13px; }
+  button:hover { background:#39434f; }
+  button.primary { background:#2b5a8c; border-color:#3d77b5; }
+  button.primary:hover { background:#356ba3; }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  button.sel { background:#4a5a2b; border-color:#7a955a; }
+  h1 { font-weight:normal; letter-spacing:.3em; }
+  h3 { margin:14px 0 6px; font-size:13px; color:#8fa1bb; border-bottom:1px solid #2a313c; padding-bottom:4px; }
+  .hint { color:#5e6b7d; font-size:11px; line-height:1.6; }
+  .val { color:#e8c56a; }
+  .good { color:#7fc97f; } .warn { color:#e8c56a; } .bad { color:#e07a6a; }
+
+  /* Loading */
+  #loading { position:fixed; inset:0; background:#0b0e13; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:99; gap:16px; }
+  #loadBar { width:320px; height:6px; background:#2a313c; border-radius:3px; overflow:hidden; }
+  #loadFill { height:100%; background:#3d77b5; width:0%; transition:width .3s; }
+  #loadMsg { font-size:12px; color:#5e6b7d; }
+
+  /* Title */
+  #screenTitle { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+    background:linear-gradient(#182338,#0f141d 70%); }
+  #screenTitle.active { display:flex; }
+  #screenTitle p { color:#8fa1bb; max-width:520px; text-align:center; line-height:1.8; font-size:13px; }
+
+  /* Station (map) */
+  #screenMap { display:none; }
+  #screenMap.active { display:flex; }
+  #mapLeft { flex:1; position:relative; }
+  #mapCanvas { width:100%; height:100%; display:block; cursor:pointer; }
+  #mapRight { width:400px; height:100vh; overflow-y:auto; background:#171b23; border-left:1px solid #2a313c; padding:14px; font-size:13px; }
+  .row { display:flex; align-items:center; gap:8px; margin:4px 0; flex-wrap:wrap; }
+  .contract { border:1px solid #2a313c; border-radius:6px; padding:8px 10px; margin:6px 0; font-size:12px; }
+  .contract.active { border-color:#7a955a; }
+  .slotBtns button { padding:4px 10px; }
+
+  /* Hangar */
+  #screenHangar { display:none; }
+  #screenHangar.active { display:flex; }
+  #hgLeft { flex:1; height:100vh; overflow-y:auto; padding:16px 22px; }
+  #hgRight { width:380px; height:100vh; overflow-y:auto; background:#171b23; border-left:1px solid #2a313c; padding:14px; font-size:13px; }
+  .part { display:flex; align-items:center; gap:10px; border:1px solid #2a313c; border-radius:6px; padding:7px 10px; margin:5px 0; font-size:12px; }
+  .part .nm { width:150px; }
+  .gauge { margin:8px 0; }
+  .gauge .bar { height:10px; background:#242b36; border-radius:5px; overflow:hidden; }
+  .gauge .fill { height:100%; border-radius:5px; }
+
+  /* Flight */
+  #screenFlight { display:none; }
+  #screenFlight.active { display:block; }
+  #hud { position:absolute; top:10px; left:10px; background:rgba(10,12,16,.75); padding:10px 14px; border-radius:8px; font-size:12.5px; line-height:1.75; white-space:pre; pointer-events:none; }
+  #hudWarn { position:absolute; top:10px; left:50%; transform:translateX(-50%); color:#e8c56a; background:rgba(40,30,8,.8); padding:6px 18px; border-radius:6px; font-size:14px; display:none; }
+  #hudKeys { position:absolute; bottom:8px; left:50%; transform:translateX(-50%); color:#5e6b7d; font-size:11.5px; background:rgba(10,12,16,.6); padding:4px 14px; border-radius:6px; }
+  #hudRight { position:absolute; top:10px; right:10px; background:rgba(10,12,16,.75); padding:10px 14px; border-radius:8px; font-size:12.5px; line-height:1.8; text-align:right; }
+  #compass { width:120px; height:34px; }
+  .bbar { width:130px; height:9px; background:#242b36; border-radius:5px; overflow:hidden; display:inline-block; vertical-align:middle; }
+  .bbar i { display:block; height:100%; border-radius:5px; background:#5da55d; }
+
+  /* Result overlay */
+  #resultOverlay { position:fixed; inset:0; background:rgba(8,10,14,.82); display:none; align-items:center; justify-content:center; z-index:50; }
+  #resultBox { background:#171b23; border:1px solid #3a4250; border-radius:10px; padding:26px 34px; max-width:460px; text-align:center; }
+  #resultBox h2 { font-weight:normal; }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <h1>风 程</h1>
+  <div id="loadBar"><div id="loadFill"></div></div>
+  <div id="loadMsg">正在加载…</div>
+  <div class="hint">首次加载需下载 Pyodide + numpy(~45MB)<br>物理计算全部在你的浏览器本地运行</div>
+</div>
+
+<!-- ============ 标题 ============ -->
+<div class="screen" id="screenTitle">
+  <h1>风 程</h1>
+  <p>驾驶一艘真实物理驱动的载人飞艇,横跨一整片大陆。<br>
+     在驿站改装你的船——每一克质量、每一平米尾翼都算数;<br>
+     读懂冰川的下降风、湖面的锋面与高原稀薄的空气,才能抵达极光城。</p>
+  <div>
+    <button class="primary" id="btnContinue" style="display:none">继续旅程</button>
+    <button class="primary" id="btnNew">新的旅程</button>
+  </div>
+  <p class="hint">同一颗种子,同一片风。祝顺风。</p>
+</div>
+
+<!-- ============ 驿站/地图 ============ -->
+<div class="screen" id="screenMap">
+  <div id="mapLeft"><canvas id="mapCanvas"></canvas></div>
+  <div id="mapRight">
+    <h3 id="stationName">驿站</h3>
+    <div class="row"><span>💰 <span class="val" id="uiMoney"></span> 币</span>
+      <span>📅 第 <span class="val" id="uiDay"></span> 天 · <span class="val" id="uiSlot"></span></span></div>
+    <div class="row"><button id="btnRest">歇一个时段</button><button id="btnHangar">🔧 机库改装</button></div>
+    <div class="hint" id="stationDesc"></div>
+
+    <h3>货运合同</h3>
+    <div id="contracts"></div>
+
+    <h3>出发</h3>
+    <div class="hint">在地图上点选相邻驿站查看航线。</div>
+    <div id="legPanel" style="display:none">
+      <div class="row"><b id="legTitle"></b></div>
+      <div class="hint" id="legInfo"></div>
+      <div class="row slotBtns" id="slotBtns"></div>
+      <div class="hint" id="forecast"></div>
+      <div class="row"><button class="primary" id="btnDepart">出发 ✈</button></div>
+      <div class="hint" id="departWarn"></div>
+    </div>
+
+    <h3>船况</h3>
+    <div class="hint" id="shipSummary"></div>
+  </div>
+</div>
+
+<!-- ============ 机库 ============ -->
+<div class="screen" id="screenHangar">
+  <div id="hgLeft">
+    <h1 style="font-size:20px">机库 · <span id="hgStation"></span></h1>
+    <div class="row"><span>💰 <span class="val" id="hgMoney"></span> 币</span>
+      <button id="btnHgBack">← 返回驿站</button></div>
+    <div id="hgParts"></div>
+  </div>
+  <div id="hgRight">
+    <h3>试航评级(实时物理计算)</h3>
+    <div class="hint">按下一段计划环境评估;改装立即生效。</div>
+    <div id="hgRatings"></div>
+    <h3>配平(压舱水,驿站免费)</h3>
+    <div class="row">
+      <input type="range" id="ballastSlider" min="0" max="400" step="5" value="100" style="flex:1">
+      <span class="val" id="ballastVal">100kg</span>
+    </div>
+    <div class="row"><button id="btnAutoTrim">自动配平(略重 8kg)</button></div>
+    <div class="hint" id="trimNote"></div>
+  </div>
+</div>
+
+<!-- ============ 飞行 ============ -->
+<div class="screen" id="screenFlight">
+  <div id="view3d" style="position:absolute;inset:0"></div>
+  <div id="hud">…</div>
+  <div id="hudRight">
+    <canvas id="compass" width="240" height="68"></canvas>
+    <div>🔋 <span class="bbar"><i id="battBar" style="width:100%"></i></span> <span id="battTxt"></span></div>
+    <div>浮力 <span id="liftTxt" class="val"></span> · 压舱 <span id="balTxt" class="val"></span></div>
+    <div>时间 <button id="ts1" style="padding:1px 7px">×1</button><button id="ts2" style="padding:1px 7px">×2</button><button id="ts4" style="padding:1px 7px">×4</button></div>
+  </div>
+  <div id="hudWarn"></div>
+  <div id="hudKeys">W/S 速度 · A/D 航向 · Q/E 高度 · C 巡航 · H 悬停 · B 抛压舱 · V 放氦 · P 暂停</div>
+</div>
+
+<!-- ============ 结算 ============ -->
+<div id="resultOverlay">
+  <div id="resultBox">
+    <h2 id="resultTitle"></h2>
+    <p id="resultBody" style="line-height:1.9"></p>
+    <button class="primary" id="btnResultOk">返回驿站</button>
+  </div>
+</div>
+
+<script type="application/json" id="airship-py-modules">__MODULES_JSON__</script>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   世界数据:大陆、驿站、航线、时段、零件目录
+   ================================================================ */
+const SLOTS = ['清晨','正午','黄昏','夜'];
+const REGION_COLOR = { plains:'#7fae5d', lake:'#4f8fbf', mountain:'#a98a62', plateau:'#c2a24f', glacier:'#9fc4d8' };
+
+let STATIONS = null;   // 由 GC.get_world() 提供(单一来源)
+
+let LEGS = null;
+
+const PARTS = {
+  envelope: [
+    {id:'env_s', nm:'气囊 · 云雀 25m',  len_m:25, dia_m:8,    skin_kg:128, price:0,
+     tip:'838 m³。轻巧灵活,高原浮力不足。'},
+    {id:'env_m', nm:'气囊 · 信天翁 30m', len_m:30, dia_m:9.6,  skin_kg:200, price:1200,
+     tip:'1447 m³。能上高原的最低配置。'},
+    {id:'env_l', nm:'气囊 · 鲸 35m',    len_m:35, dia_m:11.2, skin_kg:290, price:2600,
+     tip:'2297 m³。冰川级浮力,侧风受风面也最大。'},
+  ],
+  motor: [
+    {id:'mot_c', nm:'电机 · 巡航桨 150N', t_max_N:150, mass_kg:60,  disc_m2:3.14, price:0,
+     tip:'省电,顶风上限约 11 m/s。'},
+    {id:'mot_s', nm:'电机 · 强风桨 300N', t_max_N:300, mass_kg:110, disc_m2:4.5,  price:900,
+     tip:'顶风上限约 16 m/s,耗电更高。'},
+    {id:'mot_x', nm:'电机 · 风暴桨 450N', t_max_N:450, mass_kg:160, disc_m2:5.7,  price:2200,
+     tip:'为冰川黎明准备的怪物。'},
+  ],
+  fins: [
+    {id:'fin_s', nm:'尾翼 · 标准 30m²', s_m2:30, mass_kg:55, price:0,
+     tip:'配合转弯协调,常规风况航向稳定。'},
+    {id:'fin_l', nm:'尾翼 · 大型 48m²', s_m2:48, mass_kg:95, price:500,
+     tip:'完全静稳定:船自己迎风,像风向标。强风区必备。'},
+  ],
+  battery: [
+    {id:'bat_1', nm:'电池 · 10 kWh', wh:10000, mass_kg:50,  price:0,   tip:'约 2.5 小时巡航。'},
+    {id:'bat_2', nm:'电池 · 20 kWh', wh:20000, mass_kg:100, price:400, tip:'约 5 小时巡航。'},
+    {id:'bat_3', nm:'电池 · 30 kWh', wh:30000, mass_kg:150, price:800, tip:'长途与顶风的底气。'},
+  ],
+  solar: [
+    {id:'sol_0', nm:'太阳能 · 无',        m2:0,  mass_kg:0,  price:0,   tip:''},
+    {id:'sol_1', nm:'太阳能蒙皮 30m²',    m2:30, mass_kg:45, price:900,
+     tip:'白天约 4kW 充电;夜里是死重。'},
+  ],
+  coating: [
+    {id:'ct_ag', nm:'涂层 · 银白', abs:0.15, price:0,
+     tip:'反光,氦气超温小,昼夜浮力稳定。'},
+    {id:'ct_dk', nm:'涂层 · 玄黑', abs:0.45, price:300,
+     tip:'白天晒出额外浮力,日落后骤然变重——会用它的人才买。'},
+  ],
+};
+
+/* ================================================================
+   存档 / 游戏状态
+   ================================================================ */
+const SAVE_KEY = 'fengcheng_save_v1';
+let G = null;   // game state
+
+function newGame() {
+  return {
+    money: 600, station: 'weian', day: 1, slot: 0,
+    owned: { envelope:['env_s'], motor:['mot_c'], fins:['fin_s'], battery:['bat_1'], solar:['sol_0'], coating:['ct_ag'] },
+    inst:  { envelope:'env_s', motor:'mot_c', fins:'fin_s', battery:'bat_1', solar:'sol_0', coating:'ct_ag' },
+    ballast: 100, cargo: null,      // cargo: {to, mass, pay, name}
+    visited: ['weian'], won: false, legsFlown: 0,
+  };
+}
+function saveGame(){ localStorage.setItem(SAVE_KEY, JSON.stringify(G)); }
+function loadGame(){ const s = localStorage.getItem(SAVE_KEY); return s ? JSON.parse(s) : null; }
+
+function partOf(cat){ return PARTS[cat].find(p => p.id === G.inst[cat]); }
+function shipSpec() {
+  const env = partOf('envelope'), mot = partOf('motor'), fin = partOf('fins'),
+        bat = partOf('battery'), sol = partOf('solar'), ct = partOf('coating');
+  return {
+    envelope: {len_m:env.len_m, dia_m:env.dia_m, skin_kg:env.skin_kg},
+    fins: {s_m2:fin.s_m2, mass_kg:fin.mass_kg},
+    motor: {t_max_N:mot.t_max_N, mass_kg:mot.mass_kg, disc_m2:mot.disc_m2},
+    battery: {wh:bat.wh, mass_kg:bat.mass_kg + sol.mass_kg},
+    solar_m2: sol.m2, absorptivity: ct.abs,
+    ballast_kg: G.ballast, cargo_kg: G.cargo ? G.cargo.mass : 0,
+  };
+}
+
+/* ================================================================
+   环境构建:生物群系 × 时段 → env + terrain(与风场同源)
+   ================================================================ */
+function legBetween(aId, bId){
+  return LEGS.find(l => (l.a===aId&&l.b===bId)||(l.a===bId&&l.b===aId));
+}
+function bearingDeg(aId,bId){
+  const A=STATIONS[aId], B=STATIONS[bId];
+  // 地图 y 向下 = 南;NED 方位:north = -dy, east = dx
+  return Math.atan2(B.mx-A.mx, -(B.my-A.my))*180/Math.PI;
+}
+
+// 生成一段的物理规格。物理部分(风场/地形/阵风)由 Python 侧
+// game_core.make_leg_env 统一生成(单一物理来源,可被测试覆盖);
+// JS 只提供世界数据参数并合并 ship/route。
+function buildLegSpec(fromId, toId, slot){
+  const leg = legBetween(fromId, toId);
+  const A = STATIONS[fromId], B = STATIONS[toId];
+  const az = bearingDeg(fromId, toId);
+  const dAlt = B.alt - A.alt;
+  const dist = leg.dist;
+  const seed = (G.day*17 + G.legsFlown*7 + slot*3 + dist) % 100000;
+  const phys = JSON.parse(py.runPython(
+    `GC.make_leg_spec(${JSON.stringify(JSON.stringify(
+      {biome:leg.biome, slot, az_deg:az, d_alt_m:dAlt, dist_m:dist,
+       ground_alt_m:A.alt, seed}))})`));
+  return {
+    ship: shipSpec(), env: phys.env, terrain: phys.terrain,
+    route: {start_n:0, start_e:0,
+            dest_n: dist*Math.cos(az*Math.PI/180), dest_e: dist*Math.sin(az*Math.PI/180),
+            fly_alt_agl_m: 40},
+    gusts: phys.gusts, seed, note: phys.note,
+    meta:{from:fromId, to:toId, dAlt, dist, biome:leg.biome, az},
+  };
+}
+
+/* ================================================================
+   Pyodide 初始化
+   ================================================================ */
+let py=null, pyReady=false;
+function prog(p,m){ document.getElementById('loadFill').style.width=p+'%';
+                    document.getElementById('loadMsg').textContent=m; }
+async function initPy(){
+  prog(5,'加载 Pyodide 运行时…');
+  await new Promise((res,rej)=>{ const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js';
+    s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+  prog(15,'初始化 Pyodide…');
+  py = await loadPyodide({indexURL:'https://cdn.jsdelivr.net/pyodide/v0.27.5/full/'});
+  prog(38,'加载 numpy…');
+  await py.loadPackage(['numpy']);
+  prog(62,'装载物理引擎…');
+  const MODS = JSON.parse(document.getElementById('airship-py-modules').textContent);
+  py.FS.mkdirTree('/airship_sim');
+  for (const [name, code] of Object.entries(MODS)) {
+    if (name === 'game_core') py.FS.writeFile('/game_core.py', code);
+    else py.FS.writeFile(`/airship_sim/${name}.py`, code);
+  }
+  prog(85,'初始化游戏核心…');
+  await py.runPythonAsync("import sys; sys.path.insert(0,'/')\nimport game_core as GC");
+  const W = JSON.parse(py.runPython('GC.get_world()'));
+  STATIONS = W.stations; LEGS = W.legs;
+  prog(100,'就绪');
+  pyReady = true;
+  document.getElementById('loading').style.display='none';
+}
+function pyCall(expr){ return py.runPython(expr); }
+function pyJson(fn, obj){ return py.runPython(`GC.${fn}(${JSON.stringify(JSON.stringify(obj))})`); }
+
+/* ================================================================
+   界面切换
+   ================================================================ */
+function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+                   document.getElementById(id).classList.add('active'); }
+
+/* ================================================================
+   驿站界面(地图 + 面板)
+   ================================================================ */
+const mapCv = document.getElementById('mapCanvas');
+let selDest = null, selSlot = null;
+
+function neighbors(id){ return LEGS.filter(l=>l.a===id||l.b===id).map(l=>l.a===id?l.b:l.a); }
+
+function drawMap(){
+  const ctx = mapCv.getContext('2d');
+  const w = mapCv.clientWidth, h = mapCv.clientHeight;
+  mapCv.width=w*2; mapCv.height=h*2; ctx.scale(2,2);
+  const sx = w/1060, sy = h/520;
+  const X=s=>STATIONS[s].mx*sx, Y=s=>STATIONS[s].my*sy;
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle='#10131a'; ctx.fillRect(0,0,w,h);
+  // 航线
+  for (const l of LEGS){
+    const known = G.visited.includes(l.a)||G.visited.includes(l.b);
+    ctx.strokeStyle = known ? '#3a4250' : '#232a35';
+    ctx.lineWidth = 2; ctx.setLineDash(known?[]:[4,5]);
+    ctx.beginPath(); ctx.moveTo(X(l.a),Y(l.a)); ctx.lineTo(X(l.b),Y(l.b)); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // 选中航线高亮
+  if (selDest){
+    ctx.strokeStyle='#e8c56a'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(X(G.station),Y(G.station)); ctx.lineTo(X(selDest),Y(selDest)); ctx.stroke();
+  }
+  // 驿站
+  for (const [id,s] of Object.entries(STATIONS)){
+    const known = G.visited.includes(id) || neighbors(G.station).includes(id);
+    ctx.beginPath(); ctx.arc(X(id),Y(id), id===G.station?10:7, 0, 7);
+    ctx.fillStyle = known ? REGION_COLOR[s.region] : '#2a313c';
+    ctx.fill();
+    if (id===G.station){ ctx.strokeStyle='#fff'; ctx.lineWidth=2.5; ctx.stroke(); }
+    if (id==='jiguang'){ ctx.strokeStyle='#c9a2e8'; ctx.lineWidth=1.5; ctx.stroke(); }
+    ctx.fillStyle = known ? '#d8dee8' : '#4a5260';
+    ctx.font='12px ui-monospace';
+    ctx.fillText(known ? s.name : '?', X(id)+12, Y(id)+4);
+    if (known) { ctx.fillStyle='#5e6b7d'; ctx.font='10px ui-monospace';
+                 ctx.fillText(s.alt+'m', X(id)+12, Y(id)+16); }
+  }
+}
+mapCv.addEventListener('click', ev=>{
+  const r = mapCv.getBoundingClientRect();
+  const w=mapCv.clientWidth, h=mapCv.clientHeight, sx=w/1060, sy=h/520;
+  const mx=(ev.clientX-r.left), my=(ev.clientY-r.top);
+  for (const id of neighbors(G.station)){
+    const s=STATIONS[id];
+    if (Math.hypot(mx-s.mx*sx, my-s.my*sy) < 16){ selectDest(id); return; }
+  }
+});
+
+function selectDest(id){
+  selDest = id; selSlot = G.slot;
+  const leg = legBetween(G.station,id), B = STATIONS[id];
+  document.getElementById('legPanel').style.display='';
+  document.getElementById('legTitle').textContent =
+    `→ ${G.visited.includes(id)?B.name:'未知驿站'}(${leg.dist/1000} km,${B.alt-STATIONS[G.station].alt>=0?'+':''}${B.alt-STATIONS[G.station].alt} m)`;
+  const slotDiv=document.getElementById('slotBtns'); slotDiv.innerHTML='<span class="hint">出发时段:</span>';
+  SLOTS.forEach((nm,i)=>{
+    const b=document.createElement('button'); b.textContent=nm;
+    if(i===selSlot) b.classList.add('sel');
+    b.onclick=()=>{ selSlot=i; selectDest(id); };
+    slotDiv.appendChild(b);
+  });
+  const spec = buildLegSpec(G.station,id,selSlot);
+  document.getElementById('legInfo').textContent = `环境:${spec.meta.biome} · 出发地海拔 ${STATIONS[G.station].alt}m`;
+  document.getElementById('forecast').innerHTML = '🌬 预报:' + spec.note.join(';') +
+    (spec.gusts.length? ';途中可能有阵风':'');
+  // 评级预警
+  const r = JSON.parse(py.runPython(
+    `GC.hangar_rate(${JSON.stringify(JSON.stringify(spec.ship))}, ${JSON.stringify(JSON.stringify(spec.env))})`));
+  let warn=[];
+  if (r.net_lift_kg < -40) warn.push(`⚠ 净重 ${(-r.net_lift_kg).toFixed(0)}kg,起飞即坠——去机库减重/换气囊`);
+  else if (r.net_lift_kg < -12) warn.push(`⚠ 偏重 ${(-r.net_lift_kg).toFixed(0)}kg,爬升会很吃力`);
+  if (r.net_lift_kg > 40) warn.push(`⚠ 偏轻 ${r.net_lift_kg.toFixed(0)}kg,高度压不住,考虑加压舱`);
+  document.getElementById('departWarn').innerHTML = warn.join('<br>') ||
+    `试航:可顶风 ~${r.v_hold_m_s} m/s · 续航 ~${r.endurance_h} h · 净浮力 ${r.net_lift_kg>0?'+':''}${r.net_lift_kg} kg`;
+  drawMap();
+}
+
+/* ---- 合同 ---- */
+function seededOffers(){
+  const rnd = mulberry(G.day*131 + G.station.length*17 + G.station.charCodeAt(0));
+  const nbs = [];
+  for (const n1 of neighbors(G.station)){ nbs.push(n1);
+    for (const n2 of neighbors(n1)) if (n2!==G.station && !nbs.includes(n2)) nbs.push(n2); }
+  const offers=[];
+  const names=['邮件与包裹','医疗补给','风向仪零件','咸鱼干货','旅人行李','蜂蜡与蜜','图书与地图'];
+  for (let i=0;i<3;i++){
+    const to = nbs[Math.floor(rnd()*nbs.length)];
+    const mass = 60 + Math.floor(rnd()*7)*20;
+    const dd = Math.hypot(STATIONS[to].mx-STATIONS[G.station].mx, STATIONS[to].my-STATIONS[G.station].my);
+    const climb = Math.max(0, STATIONS[to].alt-STATIONS[G.station].alt);
+    const pay = Math.round(60 + mass*0.8 + dd*0.9 + climb*0.06);
+    offers.push({to, mass, pay, name:names[Math.floor(rnd()*names.length)]});
+  }
+  return offers;
+}
+function mulberry(a){ return function(){ a|=0; a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; } }
+
+function renderContracts(){
+  const div=document.getElementById('contracts'); div.innerHTML='';
+  if (G.cargo){
+    const c=G.cargo;
+    div.innerHTML = `<div class="contract active">📦 在运:${c.name} → ${STATIONS[c.to].name}
+      (${c.mass}kg,到付 <span class="val">${c.pay}</span> 币)
+      <button id="btnDropCargo" style="float:right;padding:2px 8px">弃单</button></div>`;
+    document.getElementById('btnDropCargo').onclick=()=>{ G.cargo=null; saveGame(); refreshStation(); };
+    return;
+  }
+  for (const o of seededOffers()){
+    const el=document.createElement('div'); el.className='contract';
+    el.innerHTML=`📦 ${o.name} → ${G.visited.includes(o.to)?STATIONS[o.to].name:'?'} · ${o.mass}kg · 酬金 <span class="val">${o.pay}</span> 币
+      <button style="float:right;padding:2px 8px">接单</button>`;
+    el.querySelector('button').onclick=()=>{ G.cargo=o; saveGame(); refreshStation(); };
+    div.appendChild(el);
+  }
+}
+
+function refreshStation(){
+  const s=STATIONS[G.station];
+  document.getElementById('stationName').textContent = `${s.name} · ${s.alt} m`;
+  document.getElementById('stationDesc').textContent = s.desc;
+  document.getElementById('uiMoney').textContent = G.money;
+  document.getElementById('uiDay').textContent = G.day;
+  document.getElementById('uiSlot').textContent = SLOTS[G.slot];
+  const env=partOf('envelope'), mot=partOf('motor');
+  document.getElementById('shipSummary').textContent =
+    `${env.nm} + ${mot.nm} + ${partOf('fins').nm} · 电池 ${partOf('battery').wh/1000}kWh` +
+    ` · 压舱 ${G.ballast}kg` + (G.cargo?` · 货 ${G.cargo.mass}kg`:'' );
+  renderContracts();
+  document.getElementById('legPanel').style.display = selDest? '' : 'none';
+  drawMap();
+}
+document.getElementById('btnRest').onclick=()=>{
+  G.slot=(G.slot+1)%4; if(G.slot===0) G.day++;
+  saveGame(); selDest=null; refreshStation();
+};
+document.getElementById('btnHangar').onclick=()=>{ openHangar(); };
+document.getElementById('btnDepart').onclick=()=>{ initAudio(); if(selDest) startLeg(G.station, selDest, selSlot); };
+
+/* ================================================================
+   机库
+   ================================================================ */
+function ratingEnv(){
+  // 评级用"计划航段"环境(选中的目的地),否则本站海拔
+  const alt = selDest ? Math.max(STATIONS[G.station].alt, STATIONS[selDest].alt) : STATIONS[G.station].alt;
+  return {ground_alt_m: alt, air_temp_C: null};
+}
+function openHangar(){
+  show('screenHangar');
+  document.getElementById('hgStation').textContent = STATIONS[G.station].name;
+  renderHangar();
+}
+function renderHangar(){
+  document.getElementById('hgMoney').textContent = G.money;
+  const div=document.getElementById('hgParts'); div.innerHTML='';
+  for (const [cat,items] of Object.entries(PARTS)){
+    const h=document.createElement('h3');
+    h.textContent={envelope:'气囊',motor:'动力',fins:'尾翼',battery:'能源',solar:'太阳能',coating:'涂层'}[cat];
+    div.appendChild(h);
+    for (const p of items){
+      const owned=G.owned[cat].includes(p.id), inst=G.inst[cat]===p.id;
+      const el=document.createElement('div'); el.className='part';
+      el.innerHTML=`<span class="nm">${p.nm}</span><span class="hint" style="flex:1">${p.tip||''}</span>`;
+      const b=document.createElement('button');
+      if (inst){ b.textContent='已装'; b.disabled=true; b.classList.add('sel'); }
+      else if (owned){ b.textContent='安装'; b.onclick=()=>{ G.inst[cat]=p.id; saveGame(); renderHangar(); }; }
+      else { b.textContent=`购买 ${p.price}币`; b.disabled=G.money<p.price;
+             b.onclick=()=>{ G.money-=p.price; G.owned[cat].push(p.id); G.inst[cat]=p.id; saveGame(); renderHangar(); }; }
+      el.appendChild(b); div.appendChild(el);
+    }
+  }
+  document.getElementById('ballastSlider').value=G.ballast;
+  document.getElementById('ballastVal').textContent=G.ballast+'kg';
+  renderRatings();
+}
+function renderRatings(){
+  const r=JSON.parse(py.runPython(
+    `GC.hangar_rate(${JSON.stringify(JSON.stringify(shipSpec()))}, ${JSON.stringify(JSON.stringify(ratingEnv()))})`));
+  const gauge=(label,val,txt,frac,color)=>`
+    <div class="gauge"><div class="row" style="justify-content:space-between">
+      <span>${label}</span><span class="${color}">${txt}</span></div>
+      <div class="bar"><div class="fill" style="width:${Math.max(3,Math.min(100,frac*100))}%;
+        background:${{good:'#5da55d',warn:'#c7a94f',bad:'#c05f52'}[color]}"></div></div></div>`;
+  const nl=r.net_lift_kg;
+  const nlCol = (nl>-12&&nl<40)?'good':(nl>-40&&nl<90)?'warn':'bad';
+  const sr=r.static_ratio, srCol=sr>0.35?'good':sr>0.2?'warn':'bad';
+  const vh=r.v_hold_m_s, vhCol=vh>10?'good':vh>7?'warn':'bad';
+  const eh=r.endurance_h, ehCol=eh>3?'good':eh>1.8?'warn':'bad';
+  document.getElementById('hgRatings').innerHTML =
+    gauge('净浮力(计划海拔)', nl, `${nl>0?'+':''}${nl} kg`, (nl+100)/200, nlCol)
+    + gauge('航向静稳定', sr, `${sr}×`, sr/0.8, srCol)
+    + gauge('最大顶风', vh, `${vh} m/s`, vh/18, vhCol)
+    + gauge('续航(8m/s 巡航)', eh, `${eh} h`, eh/6, ehCol)
+    + `<div class="hint">总质量 ${r.mass_total_kg} kg / 浮力 ${r.buoyancy_kg} kg(ρ=${r.rho})</div>`;
+  document.getElementById('trimNote').textContent =
+    nl<-12 ? '偏重:减压舱、卸货或换大气囊' : nl>40 ? '偏轻:加压舱,否则压不住高度' : '配平良好';
+}
+document.getElementById('ballastSlider').oninput=e=>{
+  G.ballast=parseInt(e.target.value);
+  document.getElementById('ballastVal').textContent=G.ballast+'kg';
+  saveGame(); renderRatings();
+};
+document.getElementById('btnAutoTrim').onclick=()=>{
+  const b=py.runPython(
+    `GC.hangar_auto_ballast(${JSON.stringify(JSON.stringify(shipSpec()))}, ${JSON.stringify(JSON.stringify(ratingEnv()))})`);
+  G.ballast=Math.round(b/5)*5;
+  saveGame(); renderHangar();
+};
+document.getElementById('btnHgBack').onclick=()=>{ show('screenMap'); refreshStation(); };
+
+/* ================================================================
+   三维飞行场景
+   ================================================================ */
+let scene,camera,renderer,controls,ship,terrainMesh,destBeacon,windArrow;
+let curLeg=null, simRunning=true, timeScale=1, pendingMs=0, lastTs=null, paused=false;
+
+function initThree(){
+  const view=document.getElementById('view3d');
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(60, 1, 1, 30000);
+  renderer=new THREE.WebGLRenderer({antialias:true});
+  view.appendChild(renderer.domElement);
+  controls=new OrbitControls(camera,renderer.domElement);
+  const resize=()=>{ const w=view.clientWidth||innerWidth,h=view.clientHeight||innerHeight;
+    camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h); };
+  addEventListener('resize',resize); resize();
+  scene.add(new THREE.HemisphereLight(0xbcc7d8,0x20242c,0.9));
+  const sun=new THREE.DirectionalLight(0xffffff,1.1); sun.position.set(600,900,300);
+  scene.add(sun); scene.userData.sun=sun;
+  windArrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(),1,0x2fb3c7,8,4);
+  scene.add(windArrow);
+}
+
+function buildShipMesh(lenM, diaM){
+  if (ship) scene.remove(ship);
+  ship=new THREE.Group();
+  const a=lenM/2, b=diaM/2;
+  const hull=new THREE.Mesh(new THREE.SphereGeometry(1,32,20),
+    new THREE.MeshStandardMaterial({color:0xd8dee8,roughness:.5}));
+  hull.scale.set(b,b,a); ship.add(hull);
+  const gond=new THREE.Mesh(new THREE.BoxGeometry(b*0.5,b*0.35,a*0.28),
+    new THREE.MeshStandardMaterial({color:0x46505e}));
+  gond.position.set(0,-b-0.6,0); ship.add(gond);
+  const finMat=new THREE.MeshStandardMaterial({color:0x8b96a8,side:THREE.DoubleSide});
+  const fg=new THREE.PlaneGeometry(a*0.24,a*0.2);
+  const fv=new THREE.Mesh(fg,finMat); fv.rotation.y=Math.PI/2; fv.position.set(0,b*0.6,a*0.8);
+  const fv2=fv.clone(); fv2.position.y=-b*0.6;
+  const fh=new THREE.Mesh(fg,finMat); fh.rotation.x=Math.PI/2; fh.position.set(b*0.6,0,a*0.8);
+  const fh2=fh.clone(); fh2.position.x=-b*0.6;
+  ship.add(fv,fv2,fh,fh2);
+  const nose=new THREE.Mesh(new THREE.ConeGeometry(b*0.12,b*0.3,10),
+    new THREE.MeshStandardMaterial({color:0xd96a3b}));
+  nose.rotation.x=-Math.PI/2; nose.position.set(0,0,-a*1.02); ship.add(nose);
+  scene.add(ship);
+}
+
+const BIOME_SKY = {
+  plains:[0x9db8d8,0x2c3a52], lake:[0x9db8d8,0x2c3a52], lake_open:[0x9db8d8,0x2c3a52],
+  foothill:[0x9cb0c8,0x2c3a52], ridge:[0x8fa5c0,0x263248], ridge_high:[0x8fa5c0,0x263248],
+  plateau_climb:[0xb8c8e0,0x2c3a52], plateau:[0xb8c8e0,0x2c3a52],
+  glacier_app:[0xcfe0ee,0x36455c], glacier:[0xcfe0ee,0x36455c],
+};
+const SLOT_TINT=[0.75,1.0,0.8,0.35];
+
+function buildTerrain(grid, biome, slot){
+  if (terrainMesh) scene.remove(terrainMesh);
+  const res=grid.res, hn=grid.half_n, he=grid.half_e;
+  const geo=new THREE.PlaneGeometry(he*2, hn*2, res-1, res-1);
+  geo.rotateX(-Math.PI/2);   // 平面 → xz(x=E, z=-N 之后处理)
+  const pos=geo.attributes.position;
+  const colors=new Float32Array(pos.count*3);
+  const cLow=new THREE.Color(biome.startsWith('glacier')?0xdfeaf2:
+              biome.startsWith('plateau')?0xb8a86a:
+              biome.includes('ridge')||biome==='foothill'?0x8a7a5c:0x6f9a55);
+  const cHigh=new THREE.Color(biome.startsWith('glacier')?0xffffff:0xcabfa8);
+  const cWater=new THREE.Color(0x2e5f8a);
+  let hMin=1e9,hMax=-1e9;
+  for(const row of grid.heights) for(const h of row){ hMin=Math.min(hMin,h); hMax=Math.max(hMax,h); }
+  const span=Math.max(hMax-hMin,1);
+  for (let i=0;i<pos.count;i++){
+    const ix=i%res, iz=Math.floor(i/res);
+    // PlaneGeometry 顶点排布:x 从 -he..he(列 = e),z 从 -hn..hn(行)
+    // 我们的 grid.heights[n 行][e 列],n 增大朝北 = three 的 -z
+    const nIdx=res-1-iz, eIdx=ix;
+    const h=grid.heights[nIdx][eIdx];
+    pos.setY(i, h);
+    const w=grid.water[nIdx][eIdx];
+    const c=w? cWater : cLow.clone().lerp(cHigh,(h-hMin)/span);
+    colors[i*3]=c.r; colors[i*3+1]=c.g; colors[i*3+2]=c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
+  geo.computeVertexNormals();
+  terrainMesh=new THREE.Mesh(geo, new THREE.MeshStandardMaterial({vertexColors:true,roughness:.95}));
+  // 网格中心在 (center_e, 0, -center_n)
+  terrainMesh.position.set(grid.center_e,0,-grid.center_n);
+  scene.add(terrainMesh);
+  // 天空/雾/光照(按生物群系与时段)
+  const [skyC,fogC]=BIOME_SKY[biome]||BIOME_SKY.plains;
+  const tint=SLOT_TINT[slot];
+  const sky=new THREE.Color(skyC).multiplyScalar(tint);
+  scene.background=sky;
+  scene.fog=new THREE.Fog(sky, 800, 9000);
+  scene.userData.sun.intensity=0.4+0.9*tint;
+  // 起点/终点标记
+  if (destBeacon) scene.remove(destBeacon);
+  destBeacon=new THREE.Group();
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(150,4,8,48),
+    new THREE.MeshBasicMaterial({color:0xe8c56a}));
+  ring.rotation.x=Math.PI/2;
+  const hDest=heightAt(grid, grid.dest[0], grid.dest[1]);
+  ring.position.set(grid.dest[1], hDest+6, -grid.dest[0]);
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(2,2,80,8),
+    new THREE.MeshBasicMaterial({color:0xe8c56a}));
+  pole.position.set(grid.dest[1], hDest+40, -grid.dest[0]);
+  destBeacon.add(ring,pole); scene.add(destBeacon);
+}
+function heightAt(grid,n,e){
+  const res=grid.res;
+  const fn=((n-(grid.center_n-grid.half_n))/(2*grid.half_n))*(res-1);
+  const fe=((e-(grid.center_e-grid.half_e))/(2*grid.half_e))*(res-1);
+  const i=Math.max(0,Math.min(res-1,Math.round(fn))), j=Math.max(0,Math.min(res-1,Math.round(fe)));
+  return grid.heights[i][j];
+}
+
+/* ================================================================
+   航段飞行
+   ================================================================ */
+let camInit=false, legSpec=null;
+function startLeg(fromId,toId,slot){
+  legSpec=buildLegSpec(fromId,toId,slot);
+  pyJson('start_leg', legSpec);
+  const grid=JSON.parse(py.runPython(
+    `GC.leg_terrain(${Math.max(legSpec.meta.dist*0.75,1600)}, ${Math.max(legSpec.meta.dist*0.75,1600)}, 80)`));
+  buildShipMesh(legSpec.ship.envelope.len_m, legSpec.ship.envelope.dia_m);
+  buildTerrain(grid, legSpec.meta.biome, slot);
+  camInit=false; paused=false; timeScale=1; pendingMs=0; lastTs=null;
+  // 出发也消耗一个时段
+  G.slot=(G.slot+1)%4; if(G.slot===0) G.day++;
+  show('screenFlight');
+}
+
+const keys={};
+addEventListener('keydown',e=>{
+  if(!document.getElementById('screenFlight').classList.contains('active'))return;
+  const k=e.key.toLowerCase();
+  keys[k]=true;
+  if(k==='c') pyJson('leg_command',{type:'cruise',on:true,speed:8});
+  if(k==='h') pyJson('leg_command',{type:'hold',on:true});
+  if(k==='b') pyJson('leg_command',{type:'drop_ballast',kg:20});
+  if(k==='v') pyJson('leg_command',{type:'vent_helium',kg:4});
+  if(k==='p') paused=!paused;
+  if(k==='1') timeScale=1; if(k==='2') timeScale=2; if(k==='4') timeScale=4;
+});
+addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+document.getElementById('ts1').onclick=()=>timeScale=1;
+document.getElementById('ts2').onclick=()=>timeScale=2;
+document.getElementById('ts4').onclick=()=>timeScale=4;
+
+function pilotInputs(dt){
+  const adj={};
+  if(keys['w']) adj.d_speed=+2.0*dt;
+  if(keys['s']) adj.d_speed=-2.0*dt;
+  if(keys['a']) adj.d_yaw_deg=-30*dt;
+  if(keys['d']) adj.d_yaw_deg=+30*dt;
+  if(keys['q']) adj.d_alt=+3.0*dt;
+  if(keys['e']) adj.d_alt=-3.0*dt;
+  if(Object.keys(adj).length){ adj.type='adjust'; pyJson('leg_command',adj); }
+}
+
+const DT_MS=5, MAX_TICKS=40;   // 游戏物理步长 5ms(见 game_core);每帧上限防卡帧螺旋
+function flightLoop(ts){
+  requestAnimationFrame(flightLoop);
+  if(!pyReady || !document.getElementById('screenFlight').classList.contains('active')) { lastTs=null; return; }
+  const dtWall = lastTs===null? 0 : Math.min((ts-lastTs)/1000, 0.1);
+  lastTs=ts;
+  pilotInputs(dtWall);
+  if(!paused){
+    pendingMs=Math.min(pendingMs+dtWall*1000*timeScale, 1200);
+    const ticks=Math.min(Math.floor(pendingMs/DT_MS), MAX_TICKS*timeScale);
+    if(ticks>0){ py.runPython(`GC.leg_step(${ticks})`); pendingMs-=ticks*DT_MS; }
+  }
+  const st=JSON.parse(py.runPython('GC.leg_state()'));
+  renderFlight(st);
+  if(st.outcome && !resultShown) showResult(st);
+}
+let resultShown=false;
+
+function renderFlight(st){
+  ship.position.fromArray(st.pos_three);
+  ship.quaternion.set(...st.quat_three_xyzw);
+  // 跟随镜头
+  const back=legSpec.ship.envelope.len_m*3.2, up=legSpec.ship.envelope.len_m*1.2;
+  if(!camInit){
+    controls.target.copy(ship.position);
+    camera.position.copy(ship.position).add(new THREE.Vector3(-back*0.7,up,back*0.7));
+    camInit=true;
+  } else {
+    const d=ship.position.clone().sub(controls.target);
+    controls.target.add(d); camera.position.add(d);
+  }
+  controls.update();
+  // 风箭头
+  const wv=new THREE.Vector3().fromArray(st.wind_three), wl=wv.length();
+  windArrow.position.set(ship.position.x, ship.position.y+legSpec.ship.envelope.dia_m*1.2, ship.position.z);
+  windArrow.visible=wl>0.3;
+  if(windArrow.visible){ windArrow.setDirection(wv.normalize()); windArrow.setLength(wl*6,10,5); }
+  renderer.render(scene,camera);
+  // HUD
+  const relBearing=((st.dest_bearing_deg-st.yaw_deg)%360+540)%360-180;
+  document.getElementById('hud').textContent=
+    `目的地  ${(st.dest_dist_m/1000).toFixed(2)} km  (${relBearing>0?'右':'左'}${Math.abs(relBearing).toFixed(0)}°)\n`+
+    `高度AGL ${st.agl_m.toFixed(0)} m   (海拔 ${st.alt_msl_m.toFixed(0)} m)\n`+
+    `速度    ${st.u_m_s.toFixed(1)} m/s → 设定 ${st.sp.speed.toFixed(1)}\n`+
+    `航向    ${st.yaw_deg.toFixed(0)}° → 设定 ${st.sp.yaw_deg.toFixed(0)}°${st.cruise?'  [巡航]':''}${st.sp.hold?'  [悬停]':''}\n`+
+    `风      ${Math.hypot(st.wind_ned[0],st.wind_ned[1]).toFixed(1)} m/s  垂直 ${(-st.wind_ned[2]).toFixed(1)}\n`+
+    `功率    ${(st.power_W/1000).toFixed(1)} kW   氦 ${st.helium_kg.toFixed(0)} kg\n`+
+    `时间    ${st.t_s.toFixed(0)} s  ×${timeScale}${paused?'  ⏸':''}`;
+  document.getElementById('battBar').style.width=(st.battery_frac*100)+'%';
+  document.getElementById('battBar').style.background=st.battery_frac>0.3?'#5da55d':'#c05f52';
+  document.getElementById('battTxt').textContent=(st.battery_frac*100).toFixed(0)+'%';
+  const nl=st.net_lift_kg;
+  document.getElementById('liftTxt').textContent=`${nl>0?'+':''}${nl.toFixed(0)}kg`;
+  document.getElementById('liftTxt').className=(nl>-15&&nl<40)?'good val':'warn val';
+  document.getElementById('balTxt').textContent=st.ballast_kg.toFixed(0)+'kg';
+  const warn=document.getElementById('hudWarn');
+  let w=st.warning||'';
+  if(st.battery_frac<0.15) w='🔋 电量告急!'+(w?' · '+w:'');
+  if(nl<-60) w='⚠ 严重偏重,考虑抛压舱(B)'+(w?' · '+w:'');
+  if(w && !warn._last) sndWarn();
+  warn._last=w;
+  warn.style.display=w?'':'none'; warn.textContent=w;
+  setWindAudio(Math.hypot(st.wind_ned[0],st.wind_ned[1]), Math.abs(st.u_m_s));
+  // 罗盘(目的地方位)
+  const cv=document.getElementById('compass'), ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,240,68);
+  ctx.save(); ctx.translate(120,34);
+  ctx.strokeStyle='#3a4250'; ctx.beginPath(); ctx.arc(0,0,26,0,7); ctx.stroke();
+  ctx.rotate(relBearing*Math.PI/180);
+  ctx.fillStyle='#e8c56a'; ctx.beginPath();
+  ctx.moveTo(0,-24); ctx.lineTo(8,6); ctx.lineTo(0,0); ctx.lineTo(-8,6); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle='#8fa1bb'; ctx.font='11px ui-monospace';
+  ctx.fillText('目的地', 96, 64);
+}
+
+/* ================================================================
+   结算
+   ================================================================ */
+function showResult(st){
+  resultShown=true;
+  setWindAudio(0,0);
+  if(st.outcome.result==='arrived') sndArrive(); else sndCrash();
+  const o=st.outcome, meta=legSpec.meta;
+  let title='', body='', backTo=meta.from;
+  if(o.result==='arrived'){
+    backTo=meta.to;
+    let gain=0, lines=[];
+    // 氦气补给费:途中放掉的氦按 3 币/kg 在到站时补满
+    const env=legSpec.ship.envelope;
+    const fullHe=0.18*(4/3)*Math.PI*(env.len_m/2)*Math.pow(env.dia_m/2,2);
+    const heUsed=Math.max(0, fullHe-st.helium_kg);
+    if(heUsed>1){ const fee=Math.round(heUsed*3); G.money=Math.max(0,G.money-fee);
+                  lines.push(`🎈 补氦 ${heUsed.toFixed(0)}kg −${fee} 币`); }
+    if(G.cargo && G.cargo.to===meta.to){ gain+=G.cargo.pay; lines.push(`📦 交付「${G.cargo.name}」 +${G.cargo.pay} 币`); G.cargo=null; }
+    else if(G.cargo && G.cargo.to!==meta.to){ lines.push('📦 货still在舱里(目的地不是这站)'); }
+    const first=!G.visited.includes(meta.to);
+    if(first){ gain+=120; lines.push('🗺 首次抵达 +120 币'); G.visited.push(meta.to); }
+    G.money+=gain; G.station=meta.to; G.legsFlown++;
+    title=`抵达 ${STATIONS[meta.to].name}`;
+    body=lines.join('<br>')||'平稳着陆。';
+    if(meta.to==='jiguang' && !G.won){ G.won=true;
+      title='🌌 极光城 · 旅程完成';
+      body='你横跨了整片大陆——平原、湖泊、山脊、高原与冰川的风,都认得你的船了。<br>'+body+
+           '<br><br>大陆仍然开放,继续飞,或者带着新船再走一遍老路。';
+    }
+  } else if(o.result==='crashed'){
+    const fee=Math.min(200+Math.round((o.impact?.v_down_m_s||5)*15), 350);
+    G.money=Math.max(0,G.money-fee);
+    if(G.cargo){ body+=`📦 货物「${G.cargo.name}」损毁。<br>`; G.cargo=null; }
+    title='💥 坠 落';
+    body+=`救援队把你和船拖回了 ${STATIONS[meta.from].name}。修理费 -${fee} 币。<br>`+
+      `<span class="hint">触地 垂直 ${o.impact?.v_down_m_s?.toFixed(1)} m/s / 水平 ${o.impact?.v_horiz_m_s?.toFixed(1)} m/s。下次慢一点、早一点减速。</span>`;
+    G.legsFlown++;
+  } else if(o.result==='water'){
+    const fee=250;
+    G.money=Math.max(0,G.money-fee);
+    if(G.cargo){ body+=`📦 货物「${G.cargo.name}」沉入湖底。<br>`; G.cargo=null; }
+    title='🌊 落 水';
+    body+=`渔船把你捞了回来,拖回 ${STATIONS[meta.from].name}。打捞费 -${fee} 币。`;
+    G.legsFlown++;
+  } else if(o.result==='stranded'){
+    const fee=150; G.money=Math.max(0,G.money-fee);
+    title='🔋 电量耗尽';
+    body=`飞艇随风搁浅,救援队拖回 ${STATIONS[meta.from].name}(-${fee} 币)。<br>
+      <span class="hint">下次带更大的电池,或借热泡与顺风省电。</span>`;
+    G.legsFlown++;
+  }
+  G.station=backTo;
+  saveGame();
+  document.getElementById('resultTitle').innerHTML=title;
+  document.getElementById('resultBody').innerHTML=body;
+  document.getElementById('resultOverlay').style.display='flex';
+}
+document.getElementById('btnResultOk').onclick=()=>{
+  document.getElementById('resultOverlay').style.display='none';
+  resultShown=false; selDest=null;
+  show('screenMap'); refreshStation();
+};
+
+/* ================================================================
+   启动
+   ================================================================ */
+document.getElementById('btnNew').onclick=()=>{
+  G=newGame(); saveGame(); show('screenMap'); refreshStation();
+};
+document.getElementById('btnContinue').onclick=()=>{
+  show('screenMap'); refreshStation();
+};
+
+/* ================================================================
+   声音(WebAudio:风噪 + 事件音;首次交互后启用)
+   ================================================================ */
+let AC=null, windGain=null, windFilt=null;
+function initAudio(){
+  if(AC) return;
+  try{
+    AC=new (window.AudioContext||window.webkitAudioContext)();
+    const len=AC.sampleRate*2, buf=AC.createBuffer(1,len,AC.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    const src=AC.createBufferSource(); src.buffer=buf; src.loop=true;
+    windFilt=AC.createBiquadFilter(); windFilt.type='lowpass'; windFilt.frequency.value=350;
+    windGain=AC.createGain(); windGain.gain.value=0;
+    src.connect(windFilt).connect(windGain).connect(AC.destination);
+    src.start();
+  }catch(e){ AC=null; }
+}
+function setWindAudio(windSpd, airSpd){
+  if(!windGain) return;
+  const v=Math.min((windSpd+airSpd)/22,1);
+  windGain.gain.setTargetAtTime(v*0.16, AC.currentTime, 0.4);
+  windFilt.frequency.setTargetAtTime(220+v*900, AC.currentTime, 0.4);
+}
+function chime(freqs, dur=0.5, type='sine', vol=0.2){
+  if(!AC) return;
+  freqs.forEach((f,i)=>{
+    const o=AC.createOscillator(), g=AC.createGain();
+    o.type=type; o.frequency.value=f;
+    g.gain.setValueAtTime(0,AC.currentTime+i*0.12);
+    g.gain.linearRampToValueAtTime(vol,AC.currentTime+i*0.12+0.03);
+    g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+i*0.12+dur);
+    o.connect(g).connect(AC.destination);
+    o.start(AC.currentTime+i*0.12); o.stop(AC.currentTime+i*0.12+dur+0.1);
+  });
+}
+const sndArrive=()=>chime([523,659,784],0.7);
+const sndCrash =()=>chime([110,82],0.9,'sawtooth',0.3);
+const sndWarn  =()=>chime([880],0.25,'square',0.08);
+
+initThree();
+requestAnimationFrame(flightLoop);
+initPy().then(()=>{
+  const s=loadGame();
+  if(s){ G=s; document.getElementById('btnContinue').style.display=''; }
+  else G=newGame();
+  show('screenTitle');
+}).catch(err=>{
+  document.getElementById('loadMsg').textContent='加载失败: '+err.message;
+  document.getElementById('loadMsg').style.color='#c75454';
+  console.error(err);
+});
+</script>
+</body>
+</html>

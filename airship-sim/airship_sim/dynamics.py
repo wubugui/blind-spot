@@ -120,11 +120,17 @@ def coriolis_times_nu(M: np.ndarray, nu: np.ndarray, nu_in: np.ndarray) -> np.nd
 class AirshipDynamics:
     """连续动力学 f(x, u, t) 与 RK4 步进。无任何渲染/控制逻辑。"""
 
-    def __init__(self, cfg: SimConfig, atmosphere: Atmosphere):
+    def __init__(self, cfg: SimConfig, atmosphere: Atmosphere, terrain=None):
         self.cfg = cfg
         self.props = build_mass_properties(cfg)
         self.aero = AeroModel(cfg.hull, cfg.aero, cfg.fins)
         self.atmosphere = atmosphere
+        # 可选地面接触(terrain=None 时路径与原先逐字节一致)
+        if terrain is not None:
+            from .ground import GroundContact
+            self.ground = GroundContact(cfg, terrain, self.props.m_total_kg)
+        else:
+            self.ground = None
         act = cfg.actuator
         # 电机位置(体轴系,相对浮心):左、右、垂直
         self._r_motors = np.array([
@@ -210,6 +216,11 @@ class AirshipDynamics:
         f_aero, m_aero = self.aero.forces_moments(nu_r, rho)
         tau[0:3] += f_aero
         tau[3:6] += m_aero
+        # 地面接触(可选,见 ground.py)
+        if self.ground is not None:
+            f_gnd, m_gnd = self.ground.forces(p, R, nu)
+            tau[0:3] += f_gnd
+            tau[3:6] += m_gnd
 
         # ---- 质量矩阵与科氏项 ----
         M_A = rho * pr.M_A_unit_rho

@@ -236,6 +236,30 @@ class HeliumThermalConfig:
 
 
 @dataclass
+class EnergyConfig:
+    """能量模型(可开关):电池 + 螺旋桨功率 + 太阳能充电。
+
+    螺旋桨功率按动量理论一阶估计:
+        v_i = sqrt(|T| / (2·ρ·A_disc))          (悬停诱导速度)
+        P   = |T|·(|u| + v_i) / η               (前进功率 + 诱导功率,含总效率 η)
+    [假设] 功率 = 推力×(轴向空速+诱导速度)/效率,η 取常数 0.6
+    / 巡航与悬停量级正确(误差 ~±30%),稀薄空气 v_i↑ 自动给出高原耗电增大
+    / 精确续航需实测电机-螺旋桨 map。
+    [假设] 电池为理想能量桶(无内阻/温度/放电曲线) / 航时估算级 / 精算需电池模型。
+    太阳能:cfg.helium.solar_on 为白天开关,输入 = 面积×辐照×效率。
+    电量耗尽后电机指令被置零(见 simulation.py),航电仍记为常数负载。
+    """
+    enabled: bool = False
+    capacity_Wh: float = 20000.0        # 电池容量
+    battery_mass_kg: float = 100.0      # 电池质量(供上层做质量预算,引擎不自动计入)
+    prop_disc_area_m2: float = 3.14     # 单桨盘面积(2m 直径)
+    prop_efficiency: float = 0.6        # 电机+桨总效率
+    avionics_W: float = 100.0           # 航电常数负载
+    solar_area_m2: float = 0.0          # 太阳能蒙皮面积(0=未装)
+    solar_efficiency: float = 0.2
+
+
+@dataclass
 class SimConfig:
     """顶层配置。"""
     dt_physics_s: float = 0.001          # 物理步长 1ms,RK4
@@ -249,6 +273,7 @@ class SimConfig:
     control: ControlConfig = field(default_factory=ControlConfig)
     atmosphere: AtmosphereConfig = field(default_factory=AtmosphereConfig)
     helium: HeliumThermalConfig = field(default_factory=HeliumThermalConfig)
+    energy: EnergyConfig = field(default_factory=EnergyConfig)
 
     # ---- 序列化(可复现性要求) ----
     def to_json(self) -> str:

@@ -43,12 +43,19 @@ class History:
 
 
 class Simulation:
-    def __init__(self, cfg: SimConfig, atmosphere: Atmosphere | None = None):
+    def __init__(self, cfg: SimConfig, atmosphere: Atmosphere | None = None,
+                 terrain=None):
         self.cfg = cfg
         # 大气湍流种子由全局种子派生(+1 偏移,与传感器流区分)
         self.atmosphere = atmosphere if atmosphere is not None else make_atmosphere(
             cfg.atmosphere, seed=cfg.seed + 1)
-        self.dynamics = AirshipDynamics(cfg, self.atmosphere)
+        self.dynamics = AirshipDynamics(cfg, self.atmosphere, terrain=terrain)
+        # 可选能量模型(cfg.energy.enabled=False 时为 None,现有路径零改动)
+        if cfg.energy.enabled:
+            from .energy import EnergyModel
+            self.energy = EnergyModel(cfg.energy)
+        else:
+            self.energy = None
         rng_root = np.random.default_rng(cfg.seed)
         self.sensors = SensorSuite(cfg.sensor, rng_root)
         self.controller = CascadeController(
@@ -69,6 +76,14 @@ class Simulation:
         self.controller.reset()
         self.history = History()
         self.atmosphere.reset()
+        if self.energy is not None:
+            self.energy.reset()
+        # 地面接触/撞击记录(上层判定着陆与坠毁)
+        self.contact = {"contact": False, "pen_m": 0.0,
+                        "v_down_m_s": 0.0, "v_horiz_m_s": 0.0, "water": False}
+        self.last_impact: dict | None = None
+        self._prev_v_down = 0.0
+        self._prev_v_horiz = 0.0
         self._init_helium(p_ned_m)
         # 初始测量 = 初始真值(控制器第一拍前已有有效测量)
         self.sensors.sample_imu(self.x, 0.0)
@@ -125,10 +140,42 @@ class Simulation:
             self._step_helium(t)
             self.cmd = self.controller.update(
                 self.sensors.meas, self.x[IDX_POS], self._dt_ctrl_s)
+            self._step_energy(t)
+            self._step_contact()
             if record:
                 self._record(t)
         self.x = self.dynamics.step_rk4(self.x, self.cmd.as_array(), t, self.cfg.dt_physics_s)
         self.tick += 1
+
+    def _step_energy(self, t: float) -> None:
+        if self.energy is None:
+            return
+        atm = self.atmosphere.get_state(self.x[IDX_POS], t)
+        hcfg = self.cfg.helium
+        self.energy.step(self.x[IDX_THRUST], self.x[IDX_VEL][0], self.x[IDX_VEL][2],
+                         atm.rho_kg_m3, hcfg.solar_on, hcfg.solar_flux_W_m2,
+                         self._dt_ctrl_s)
+        if self.energy.depleted:
+            self.cmd = MotorCommands()   # 电量耗尽:电机停转(浮空不受影响)
+
+    def _step_contact(self) -> None:
+        """接触探针 + 首次触地撞击速度记录(50Hz;地面模块未挂时零开销)。"""
+        gnd = self.dynamics.ground
+        if gnd is None:
+            return
+        from .math3d import quat_normalize, quat_to_rotmat
+        R = quat_to_rotmat(quat_normalize(self.x[IDX_QUAT]))
+        nu = np.concatenate([self.x[IDX_VEL], self.x[IDX_OMEGA]])
+        was = self.contact["contact"]
+        self.contact = gnd.probe(self.x[IDX_POS], R, nu)
+        if self.contact["contact"] and not was:
+            # 撞击速度取触地前一拍的速度(触地后弹簧立即减速,当前值偏小)
+            self.last_impact = {"v_down_m_s": self._prev_v_down,
+                                "v_horiz_m_s": self._prev_v_horiz,
+                                "water": self.contact["water"], "t_s": self.t_s}
+        v_w = R @ self.x[IDX_VEL]
+        self._prev_v_down = float(v_w[2])
+        self._prev_v_horiz = float(np.hypot(v_w[0], v_w[1]))
 
     def run(self, duration_s: float, record: bool = True) -> History:
         n = round(duration_s / self.cfg.dt_physics_s)
