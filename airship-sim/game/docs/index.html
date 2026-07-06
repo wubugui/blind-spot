@@ -385,7 +385,8 @@ mapCv.addEventListener('click', ev=>{
   const r = mapCv.getBoundingClientRect();
   const w=mapCv.clientWidth, h=mapCv.clientHeight, sx=w/1060, sy=h/520;
   const mx=(ev.clientX-r.left), my=(ev.clientY-r.top);
-  for (const id of neighbors(G.station)){
+  for (const id of Object.keys(STATIONS)){
+    if (id===G.station) continue;
     const s=STATIONS[id];
     if (Math.hypot(mx-s.mx*sx, my-s.my*sy) < 16){ selectDest(id); return; }
   }
@@ -395,6 +396,23 @@ function selectDest(id){
   selDest = id; selSlot = G.slot;
   const leg = legBetween(G.station,id), B = STATIONS[id];
   document.getElementById('legPanel').style.display='';
+  if (!leg){
+    // 非相邻:调试传送
+    document.getElementById('legTitle').textContent = `→ ${B.name}(不相邻)`;
+    document.getElementById('legInfo').textContent = '飞艇只能飞相邻航线;调试用传送可直接过去。';
+    document.getElementById('slotBtns').innerHTML='';
+    document.getElementById('forecast').innerHTML='';
+    document.getElementById('departWarn').innerHTML =
+      '<button id="btnTeleport" class="primary">🧪 调试传送到 '+B.name+'</button>';
+    document.getElementById('btnDepart').style.display='none';
+    document.getElementById('btnTeleport').onclick=()=>{
+      G.station=id;
+      if(!G.visited.includes(id)) G.visited.push(id);
+      selDest=null; saveGame(); refreshStation();
+    };
+    drawMap(); return;
+  }
+  document.getElementById('btnDepart').style.display='';
   document.getElementById('legTitle').textContent =
     `→ ${B.name}(${leg.dist/1000} km,${B.alt-STATIONS[G.station].alt>=0?'+':''}${B.alt-STATIONS[G.station].alt} m)`;
   const slotDiv=document.getElementById('slotBtns'); slotDiv.innerHTML='<span class="hint">出发时段:</span>';
