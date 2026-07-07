@@ -70,6 +70,23 @@
   #resultOverlay { position:fixed; inset:0; background:rgba(8,10,14,.82); display:none; align-items:center; justify-content:center; z-index:50; }
   #resultBox { background:#171b23; border:1px solid #3a4250; border-radius:10px; padding:26px 34px; max-width:460px; text-align:center; }
   #resultBox h2 { font-weight:normal; }
+
+  /* 驿站小剧场 / 结局 */
+  #storyOverlay { position:fixed; inset:0; background:radial-gradient(ellipse at 50% 30%, rgba(30,36,48,.90), rgba(6,8,12,.96)); display:none; align-items:center; justify-content:center; z-index:60; }
+  #storyOverlay.show { display:flex; }
+  #storyBox { max-width:560px; padding:38px 44px; text-align:center; animation:storyFade .9s ease; }
+  @keyframes storyFade { from{opacity:0; transform:translateY(12px)} to{opacity:1; transform:none} }
+  #storyMono { font-size:17px; line-height:1.9; color:#e8c98a; font-style:italic; margin-bottom:26px; letter-spacing:.02em; }
+  #storyMono:before { content:'「'; } #storyMono:after { content:'」'; }
+  #storyMono:empty { display:none; }
+  #storyWho { font-size:13px; color:#8fa2c0; letter-spacing:.08em; margin-bottom:14px; }
+  #storyWho:empty { display:none; }
+  #storyScene { font-size:15px; line-height:2.05; color:#d3dae6; margin-bottom:22px; }
+  #storyGift { font-size:13.5px; color:#8fc79a; background:rgba(60,90,66,.22); border:1px solid rgba(120,170,130,.3); border-radius:8px; padding:9px 14px; margin:0 auto 26px; display:inline-block; }
+  #storyGift:empty { display:none; }
+  #storyBox.epilogue #storyMono { color:#cfe0f2; font-size:16px; }
+  #departCaption { position:absolute; top:64px; left:50%; transform:translateX(-50%); max-width:70%; text-align:center; color:#e8c98a; font-style:italic; font-size:15px; text-shadow:0 2px 8px rgba(0,0,0,.7); opacity:0; transition:opacity 1s ease; pointer-events:none; z-index:20; }
+  #departCaption.show { opacity:1; }
 </style>
 </head>
 <body>
@@ -84,9 +101,9 @@
 <!-- ============ 标题 ============ -->
 <div class="screen" id="screenTitle">
   <h1>风 程</h1>
-  <p>驾驶一艘真实物理驱动的载人飞艇,横跨一整片大陆。<br>
-     在驿站改装你的船——每一克质量、每一平米尾翼都算数;<br>
-     读懂冰川的下降风、湖面的锋面与高原稀薄的空气,才能抵达极光城。</p>
+  <p>一个人,驾一艘飞艇,飞越整片大陆,去往传说夜里会发光的极光城。<br>
+     在每一处驿站停留:修补你的船,也认识那些愿意为你停下来的人。<br>
+     你出发时心高气傲——愿你抵达时,心,也靠了岸。</p>
   <div>
     <button class="primary" id="btnContinue" style="display:none">继续旅程</button>
     <button class="primary" id="btnNew">新的旅程</button>
@@ -148,6 +165,7 @@
 <!-- ============ 飞行 ============ -->
 <div class="screen" id="screenFlight">
   <div id="view3d" style="position:absolute;inset:0"></div>
+  <div id="departCaption"></div>
   <div id="hud">…</div>
   <div id="hudRight">
     <canvas id="compass" width="240" height="68"></canvas>
@@ -166,6 +184,17 @@
     <h2 id="resultTitle"></h2>
     <p id="resultBody" style="line-height:1.9"></p>
     <button class="primary" id="btnResultOk">返回驿站</button>
+  </div>
+</div>
+
+<!-- ============ 驿站小剧场 / 结局 ============ -->
+<div id="storyOverlay">
+  <div id="storyBox">
+    <div id="storyMono"></div>
+    <div id="storyWho"></div>
+    <div id="storyScene"></div>
+    <div id="storyGift"></div>
+    <button class="primary" id="btnStoryOk">继续</button>
   </div>
 </div>
 
@@ -233,6 +262,128 @@ const PARTS = {
 };
 
 /* ================================================================
+   治愈之旅:驿站小剧场(人物 / 见闻 / 内心独白 / 善意馈赠)
+   主角的心境弧线:心高气傲、急于证明 → 一路被善意接住 → 靠岸般的宁静。
+   ================================================================ */
+const STORY = {
+  weian: {
+    who: '摆渡的老人 · 阿槐',
+    arrive: '海峡那头有座会发光的城。我要一个人飞过去——飞给所有说我做不到的人看。',
+    scene: ['苇岸的清晨浮着薄雾,阿槐替你解开最后一根缆绳。',
+            '「急着走啊。」他笑,「风又不会跑。年轻人总以为终点在远处。」',
+            '他往你舱里塞了两个还热的米团,像送一个远行的孙儿。'],
+    gift: {type:'service', label:'阿槐替你检修了缆绳与气囊,分文不取。'},
+    depart: '等我到了极光城,再回来告诉你——你说错了。'
+  },
+  mailang: {
+    who: '麦田里的少女 · 禾',
+    arrive: '一天,顶多两天,我就能飞出这片平原。',
+    scene: ['麦浪镇的午后,风把金色的麦子压成一片起伏的海。',
+            '禾追着你的船影跑了很远,只为把一封信交到你手上,捎去银湖港。',
+            '「你要去很远的地方吗?」她仰着头,「远方……是什么样子?」你竟答不上来。'],
+    gift: {type:'coin', amt:80, label:'镇上人凑了 80 币,谢你替他们捎信。'},
+    depart: '远方是什么样子——我一时想不起,自己为什么非去不可。'
+  },
+  fengche: {
+    who: '风车匠 · 老陶',
+    arrive: '再快一点,天黑前就能赶到湖港。',
+    scene: ['老风车吱呀吱呀地转。老陶眯眼看了看你的尾翼,摇头。',
+            '「风不听急人的话。」他说,「你越跟它抢,它越不给你。」',
+            '他拆下自家风车一片旧木叶,替你把偏斜的尾翼校正好。'],
+    gift: {type:'part', cat:'fins', pid:'fin_l', label:'老陶送你一副更稳的大尾翼,只说:别跟风抢。'},
+    depart: '跟风抢……我好像,一直都在跟什么东西抢。'
+  },
+  yinhu: {
+    who: '渔妇 · 阿蓝',
+    arrive: '湖面而已,一口气就能飞过去。',
+    scene: ['可湖锋毫无预兆地压上岸,把你的船硬生生按了回来。',
+            '阿蓝的渔船把你拖进港湾,又拉你上桌,盛了一碗热汤。',
+            '「湖有湖的脾气,」她说,「你等它睡了,它自然让你过。」'],
+    gift: {type:'service', label:'阿蓝一家替你烘干了艇身,留你住了一夜。'},
+    depart: '原来不是我想飞,就能飞。'
+  },
+  shuangyu: {
+    who: '守岛人 · 老屿',
+    arrive: '双屿之间的水路,我记得清清楚楚。',
+    scene: ['湖心两座小岛,岛间没有热泡,也没有可以迫降的地方。',
+            '老屿陪你在礁石上坐了一下午,只为等一阵合适的风。',
+            '「不急,」他望着水面,「等,也是在赶路。」'],
+    gift: {type:'hint', label:'老屿告诉你:湖锋总在正午后上岸,清晨的湖面最温顺。'},
+    depart: '等,也是在赶路——这句话,我记下了。'
+  },
+  aikou: {
+    who: '戍关的老兵 · 石头',
+    arrive: '翻过这道山门,离终点就不远了。',
+    scene: ['隘口堡是群山的大门。从这里起,每一段航程都在爬升。',
+            '老兵石头守了半辈子关,一言不发地替你把氦气补到满。',
+            '临别他只说了一句:「山里的风冷。飞慢些,别逞强。」'],
+    gift: {type:'refuel', label:'石头替你把氦气补到了满,为进山做准备。'},
+    depart: '别逞强……我到底,在赶什么?'
+  },
+  yingling: {
+    who: '守灯人 · 阿岫',
+    arrive: '累。可是不能停。停下来,就前功尽弃。',
+    scene: ['鹰岭的风门在头顶呼啸。阿岫独居山脊,每到夜里就点起一盏灯。',
+            '「给过路的飞行者看的,」她说,「让他们知道,再黑的天里,也有人等着。」',
+            '那一夜你睡得很沉。梦里没有海峡,只有一盏暖黄的灯。'],
+    gift: {type:'part', cat:'battery', pid:'bat_2', label:'阿岫把她备用的灯用电池送给了你。'},
+    depart: '再黑的天里,也有人等着——我忽然没那么怕慢下来了。'
+  },
+  yunti: {
+    who: '驿卒 · 小满',
+    arrive: '空气稀薄了。船,也和我一样,喘。',
+    scene: ['云梯驿是云上的台阶。小满煮了一壶粗茶,推到你面前。',
+            '「歇会儿吧,」他说,「上了云梯的人,都学会了慢慢走。」',
+            '你捧着热茶,第一次,没有去看时间。'],
+    gift: {type:'service', label:'小满留你歇脚,替船细细做了保养,不收钱。'},
+    depart: '第一次,我没有去数还剩多少路。'
+  },
+  shidian: {
+    who: '牧人 · 达瓦',
+    arrive: '更高,更稀薄。可是我,已经没那么急了。',
+    scene: ['石甸的空气只有海平面的七成,升力和推力都打了折扣。',
+            '牧人达瓦把牦牛的干草匀了一捆给你压舱,笑得很憨厚。',
+            '「山上的日子慢,」他说,「慢有慢的好。庄稼、云、还有人心,都急不得。」'],
+    gift: {type:'coin', amt:60, label:'达瓦硬塞给你一点盘缠,不肯收回。'},
+    depart: '慢有慢的好——我竟开始舍不得这一路了。'
+  },
+  jingfan: {
+    who: '挂经幡的老者 · 顿珠',
+    arrive: '离终点只剩最后几程了。可我心里,忽然空落落的。',
+    scene: ['经幡台上,风把千万面经幡吹成一条水平的、彩色的河。',
+            '顿珠替你在船首系上一小片蓝幡。「风带走它,」他说,「也带走你放不下的。」',
+            '「孩子,你追了这么远——你追的,真的是那座城吗?」'],
+    gift: {type:'service', label:'顿珠为你和你的船,做了一场简单的祝祷。'},
+    depart: '也许抵达不是终点,而是终于把心放下的地方。'
+  },
+  bingshe: {
+    who: '冰川守望者 · 雪鸮',
+    arrive: '最后的冰川了。黎明的下降风,像一条看不见的河。',
+    scene: ['冰舌前哨孤悬在冰川末端。雪鸮独自守着这里,替过路人记下每一阵风。',
+            '「顺着黎明那条河走,」她说,「它会把你,温柔地送下去。」',
+            '她递来一壶热酒,和一句话:「快到了。回头,看看你飞过的路。」'],
+    gift: {type:'refuel', label:'雪鸮替你补满氦气,为最后一程送行。'},
+    depart: '回头看看——原来我已经飞了这么远,遇见了这么多人。'
+  },
+  jiguang: {
+    who: '极光城的人们',
+    arrive: '到了。我……到了。',
+    scene: ['夜里,天上真的有光。绿色的帷幕在雪峰之上,缓缓地流淌。',
+            '城里的人们提着灯,来迎接又一个飞越了整片大陆的旅人。',
+            '他们不问你是谁,只是笑着替你系好船——像迎接一个,终于回家的人。'],
+    gift: {type:'none', label:''},
+    depart: ''
+  }
+};
+const EPILOGUE =
+  '你曾以为,这是一场证明——证明你能一个人,飞过所有人都说飞不过的海峡。<br><br>'+
+  '可当极光落在肩上,你忽然明白:<br>'+
+  '带你到这里的,从来不是那台发动机。<br>'+
+  '是苇岸的米团、麦浪的信、老陶的尾翼、阿蓝的热汤、阿岫的灯、达瓦的干草、顿珠的蓝幡、雪鸮的热酒……<br>'+
+  '是这一路上,那些素不相识、却愿意为你停下来的人。<br><br>'+
+  '你心高气傲地出发。如今,你的心,终于靠了岸。';
+
+/* ================================================================
    存档 / 游戏状态
    ================================================================ */
 const SAVE_KEY = 'fengcheng_save_v1';
@@ -244,7 +395,7 @@ function newGame() {
     owned: { envelope:['env_s'], motor:['mot_c'], fins:['fin_s'], battery:['bat_1'], solar:['sol_0'], coating:['ct_ag'] },
     inst:  { envelope:'env_s', motor:'mot_c', fins:'fin_s', battery:'bat_1', solar:'sol_0', coating:'ct_ag' },
     ballast: 100, cargo: null,      // cargo: {to, mass, pay, name}
-    visited: ['weian'], won: false, legsFlown: 0,
+    visited: ['weian'], storySeen: [], won: false, legsFlown: 0,
   };
 }
 function saveGame(){ localStorage.setItem(SAVE_KEY, JSON.stringify(G)); }
@@ -464,16 +615,16 @@ function renderContracts(){
   const div=document.getElementById('contracts'); div.innerHTML='';
   if (G.cargo){
     const c=G.cargo;
-    div.innerHTML = `<div class="contract active">📦 在运:${c.name} → ${STATIONS[c.to].name}
-      (${c.mass}kg,到付 <span class="val">${c.pay}</span> 币)
-      <button id="btnDropCargo" style="float:right;padding:2px 8px">弃单</button></div>`;
+    div.innerHTML = `<div class="contract active">🤝 替人捎着:${c.name} → ${STATIONS[c.to].name}
+      (${c.mass}kg,送到有 <span class="val">${c.pay}</span> 币心意)
+      <button id="btnDropCargo" style="float:right;padding:2px 8px">放下</button></div>`;
     document.getElementById('btnDropCargo').onclick=()=>{ G.cargo=null; saveGame(); refreshStation(); };
     return;
   }
   for (const o of seededOffers()){
     const el=document.createElement('div'); el.className='contract';
-    el.innerHTML=`📦 ${o.name} → ${STATIONS[o.to].name} · ${o.mass}kg · 酬金 <span class="val">${o.pay}</span> 币
-      <button style="float:right;padding:2px 8px">接单</button>`;
+    el.innerHTML=`🤝 有人托你把「${o.name}」捎去 ${STATIONS[o.to].name} · ${o.mass}kg · 谢礼 <span class="val">${o.pay}</span> 币
+      <button style="float:right;padding:2px 8px">捎上</button>`;
     el.querySelector('button').onclick=()=>{ G.cargo=o; saveGame(); refreshStation(); };
     div.appendChild(el);
   }
@@ -1647,6 +1798,7 @@ function startLeg(fromId,toId,slot){
   // 出发也消耗一个时段
   G.slot=(G.slot+1)%4; if(G.slot===0) G.day++;
   show('screenFlight');
+  departLine(fromId);        // 起飞时的内心独白字幕
 }
 
 const keys={};
@@ -1791,6 +1943,52 @@ function renderFlight(st, dt=0.016){
 /* ================================================================
    结算
    ================================================================ */
+/* ---- 驿站小剧场:善意馈赠(淡化金钱——改装/补给多来自沿途人们) ---- */
+function applyGift(g){
+  if(!g) return '';
+  if(g.type==='coin'){ G.money += g.amt; return g.label; }
+  if(g.type==='part'){
+    if(!G.owned[g.cat].includes(g.pid)) G.owned[g.cat].push(g.pid);
+    G.inst[g.cat]=g.pid;                 // 免费装上——是别人送的
+    return g.label;
+  }
+  return g.label||'';                    // service / refuel / hint / none:纯叙事
+}
+/* 播放某站的小剧场;onDone 在玩家点「继续」后回调。首次抵达才发生。 */
+let _storyThen=null;
+function playVignette(stId, onDone){
+  const s=STORY[stId];
+  if(!s){ if(onDone) onDone(); return; }
+  G.storySeen = G.storySeen || [];
+  let giftLabel='';
+  if(!G.storySeen.includes(stId)){ giftLabel = applyGift(s.gift); G.storySeen.push(stId); saveGame(); }
+  const box=document.getElementById('storyBox');
+  box.classList.toggle('epilogue', stId==='jiguang');
+  document.getElementById('storyMono').textContent = s.arrive || '';
+  document.getElementById('storyWho').textContent  = s.who ? '— '+s.who : '';
+  if(stId==='jiguang'){
+    document.getElementById('storyScene').innerHTML = (s.scene||[]).join('<br><br>') + '<br><br><br>' + EPILOGUE;
+  } else {
+    document.getElementById('storyScene').innerHTML = (s.scene||[]).join('<br><br>');
+  }
+  document.getElementById('storyGift').textContent = giftLabel || '';
+  _storyThen = onDone || null;
+  document.getElementById('storyOverlay').classList.add('show');
+}
+document.getElementById('btnStoryOk').onclick=()=>{
+  document.getElementById('storyOverlay').classList.remove('show');
+  const cb=_storyThen; _storyThen=null; if(cb) cb();
+};
+/* 出发时的内心独白字幕(飞行画面顶部淡入淡出) */
+function departLine(fromId){
+  const s=STORY[fromId]; if(!s||!s.depart) return;
+  const el=document.getElementById('departCaption');
+  el.textContent = s.depart;
+  el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'), 6500);
+}
+
+let _pendingStory=null;   // 到站后待播的小剧场站点
 function showResult(st){
   resultShown=true;
   setWindAudio(0,0);
@@ -1800,24 +1998,25 @@ function showResult(st){
   if(o.result==='arrived'){
     backTo=meta.to;
     let gain=0, lines=[];
-    // 氦气补给费:途中放掉的氦按 3 币/kg 在到站时补满
+    const first=!G.visited.includes(meta.to);
+    const story=STORY[meta.to];
+    // 善意覆盖:首次抵达且当地人替你补给(service/refuel),则免补氦费
+    const kindCovers = first && story && (story.gift.type==='service'||story.gift.type==='refuel');
+    // 氦气补给费:途中放掉的氦在到站时补满(1.5 币/kg,金钱已淡化)
     const env=legSpec.ship.envelope;
     const fullHe=0.18*(4/3)*Math.PI*(env.len_m/2)*Math.pow(env.dia_m/2,2);
     const heUsed=Math.max(0, fullHe-st.helium_kg);
-    if(heUsed>1){ const fee=Math.round(heUsed*3); G.money=Math.max(0,G.money-fee);
+    if(heUsed>1 && !kindCovers){ const fee=Math.round(heUsed*1.5); G.money=Math.max(0,G.money-fee);
                   lines.push(`🎈 补氦 ${heUsed.toFixed(0)}kg −${fee} 币`); }
-    if(G.cargo && G.cargo.to===meta.to){ gain+=G.cargo.pay; lines.push(`📦 交付「${G.cargo.name}」 +${G.cargo.pay} 币`); G.cargo=null; }
-    else if(G.cargo && G.cargo.to!==meta.to){ lines.push('📦 货still在舱里(目的地不是这站)'); }
-    const first=!G.visited.includes(meta.to);
-    if(first){ gain+=120; lines.push('🗺 首次抵达 +120 币'); G.visited.push(meta.to); }
+    if(G.cargo && G.cargo.to===meta.to){ gain+=G.cargo.pay; lines.push(`🤝 把「${G.cargo.name}」捎到了 +${G.cargo.pay} 币`); G.cargo=null; }
+    else if(G.cargo && G.cargo.to!==meta.to){ lines.push('📦 捎带的东西还在舱里(不是这一站)'); }
+    if(first){ G.visited.push(meta.to); }
     G.money+=gain; G.station=meta.to; G.legsFlown++;
     title=`抵达 ${STATIONS[meta.to].name}`;
     body=lines.join('<br>')||'平稳着陆。';
-    if(meta.to==='jiguang' && !G.won){ G.won=true;
-      title='🌌 极光城 · 旅程完成';
-      body='你横跨了整片大陆——平原、湖泊、山脊、高原与冰川的风,都认得你的船了。<br>'+body+
-           '<br><br>大陆仍然开放,继续飞,或者带着新船再走一遍老路。';
-    }
+    // 首次抵达 → 到站后播放驿站小剧场(结局在极光城)
+    if(first && story) _pendingStory=meta.to;
+    if(meta.to==='jiguang' && !G.won){ G.won=true; }
   } else if(o.result==='crashed'){
     const fee=Math.min(200+Math.round((o.impact?.v_down_m_s||5)*15), 350);
     G.money=Math.max(0,G.money-fee);
@@ -1849,7 +2048,9 @@ function showResult(st){
 document.getElementById('btnResultOk').onclick=()=>{
   document.getElementById('resultOverlay').style.display='none';
   resultShown=false; selDest=null;
-  show('screenMap'); refreshStation();
+  const goMap=()=>{ show('screenMap'); refreshStation(); };
+  if(_pendingStory){ const st=_pendingStory; _pendingStory=null; playVignette(st, goMap); }  // 先见闻,再回驿站
+  else goMap();
 };
 
 /* ================================================================
@@ -1857,6 +2058,7 @@ document.getElementById('btnResultOk').onclick=()=>{
    ================================================================ */
 document.getElementById('btnNew').onclick=()=>{
   G=newGame(); saveGame(); show('screenMap'); refreshStation();
+  playVignette('weian');     // 开场:苇岸的清晨,阿槐送行
 };
 document.getElementById('btnContinue').onclick=()=>{
   show('screenMap'); refreshStation();
@@ -1915,7 +2117,8 @@ initThree();
 requestAnimationFrame(flightLoop);
 initPy().then(()=>{
   const s=loadGame();
-  if(s){ G=s; document.getElementById('btnContinue').style.display=''; }
+  if(s){ G=s; if(!G.storySeen) G.storySeen=[];   // 旧存档迁移
+         document.getElementById('btnContinue').style.display=''; }
   else G=newGame();
   show('screenTitle');
 }).catch(err=>{
