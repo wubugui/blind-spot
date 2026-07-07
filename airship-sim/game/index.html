@@ -991,11 +991,15 @@ function makeOceanMaterial(){
       uAmp:{value:oceanAmp}, uSigma:{value:oceanSigma}, uPatch:{value:OCEAN_PATCH}, uTime:{value:0},
       uSunDir:{value:new THREE.Vector3(0.4,0.8,0.2)},
       uSunColor:{value:new THREE.Color(0xfff2dd)},
-      uSkyColor:{value:new THREE.Color(0x9db8d8)},
-      uDeepColor:{value:new THREE.Color(0x174468)},      // 采样自参考图前景深海
-      uShallowColor:{value:new THREE.Color(0x4884ac)},   // 采样自参考图中景水色
-      uSssColor:{value:new THREE.Color(0x5f95c6)},       // 透光偏蓝,不再翠绿
+      uSkyColor:{value:new THREE.Color(0x8fb0cf)},       // 天顶反射蓝
+      uHorizonColor:{value:new THREE.Color(0xaebfcb)},   // 地平线反射(=雾色,运行时更新)
+      uDeepColor:{value:new THREE.Color(0x123d5e)},      // 深水吸收色
+      uShallowColor:{value:new THREE.Color(0x3f7ba0)},   // 浅水
+      uSssColor:{value:new THREE.Color(0x2fa085)},       // 次表面散射:海绿透光(仅浪峰/逆光)
       uCamPos:{value:new THREE.Vector3()},
+      // 次表面散射(DICE/刺客信条式浪峰透光)
+      uSssBase:{value:0.16}, uSssSun:{value:1.35}, uSssPow:{value:3.0}, uSssDistort:{value:0.18},
+      uRough:{value:0.10},                               // 水面微表面粗糙度(GGX)
       uExposure:{value:1.0},
     },
     vertexShader:`
@@ -1016,9 +1020,10 @@ function makeOceanMaterial(){
         gl_Position = projectionMatrix * viewMatrix * wp;
       }`,
     fragmentShader:`
+      #define PI 3.14159265
       uniform sampler2D tNormal, tDetail;
-      uniform vec3 uSunDir, uSunColor, uSkyColor, uDeepColor, uShallowColor, uSssColor, uCamPos;
-      uniform float uTime, uAmp, uSigma;
+      uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizonColor, uDeepColor, uShallowColor, uSssColor, uCamPos;
+      uniform float uTime, uAmp, uSigma, uSssBase, uSssSun, uSssPow, uSssDistort, uRough;
       varying vec3 vWorld; varying float vDepth, vWave; varying vec2 vUvW;
       void main(){
         vec3 nW = vec3(0.0,1.0,0.0);
@@ -1027,30 +1032,35 @@ function makeOceanMaterial(){
         #endif
         vec3 d1 = texture2D(tDetail, vWorld.xz*0.11 + vec2(uTime*0.016, uTime*0.011)).xyz*2.0-1.0;
         vec3 d2 = texture2D(tDetail, vWorld.xz*0.041 - vec2(uTime*0.009, uTime*0.013)).xyz*2.0-1.0;
-        vec3 N = normalize(vec3(nW.x + 0.22*d1.x + 0.14*d2.x,
+        vec3 N = normalize(vec3(nW.x + 0.32*d1.x + 0.20*d2.x,
                                 1.0,
-                                nW.z + 0.22*d1.y + 0.14*d2.y));
-        // 低多边形刻面:掺入三角面几何法线(屏幕空间导数)→ 参考图块面水感
-        vec3 faceN = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
-        if(faceN.y < 0.0) faceN = -faceN;
-        N = normalize(mix(N, faceN, 0.4));
+                                nW.z + 0.32*d1.y + 0.20*d2.y));
+        // 水体 BRDF:菲涅尔混合(体色+SSS)/(天空反射) + GGX 太阳镜面
         vec3 V = normalize(uCamPos - vWorld);
         vec3 L = normalize(uSunDir);
-        float fres = 0.02 + 0.98*pow(1.0 - max(dot(N,V),0.0), 5.0);
+        float NoV = max(dot(N,V), 0.0);
+        float fres = 0.02 + 0.98*pow(1.0 - NoV, 5.0);
         // 深浅水体色
         vec3 base = mix(uShallowColor, uDeepColor, clamp(vDepth/7.0, 0.0, 1.0));
         // 次表面散射:逆光透过浪峰(视线迎着折入水中的阳光 × 浪高 × 薄度)
-        vec3 Lt = normalize(-L + vec3(0.0,-0.35,0.0));
-        float sss = pow(max(dot(V, Lt), 0.0), 3.5)
-                  * clamp(vWave/(uSigma*2.0+0.001)*0.5+0.5, 0.0, 1.0)
-                  * clamp(1.0 - vDepth*0.08, 0.35, 1.0);
-        base += uSssColor * sss * (1.0-fres) * 0.75;
+        vec3 Ht = normalize(L + N*uSssDistort);
+        float back = pow(max(dot(V, -Ht), 0.0), uSssPow) * uSssSun;
+        float thick = clamp(0.35 + vWave/(uSigma*3.0+0.001), 0.0, 1.4);
+        float shallow = clamp(1.0 - vDepth*0.05, 0.4, 1.0);
+        float sss = (uSssBase + back) * thick * shallow * (1.0 - fres);
+        base += uSssColor * uSunColor * sss;
         // 天空反射 + 太阳高光
-        vec3 refl = uSkyColor * (0.85 + 0.3*max(N.y,0.0));
-        float rv = max(dot(reflect(-L, N), V), 0.0);
-        float spec = pow(rv, 240.0);                 // 尖锐镜面点
-        float glit = pow(rv, 26.0);                  // 宽阔阳光大道(刻面法线 → 碎光)
-        vec3 col = mix(base, refl, fres) + uSunColor * (spec*2.0 + glit*0.55);
+        vec3 R = reflect(-V, N);
+        vec3 refl = mix(uHorizonColor, uSkyColor, clamp(R.y*1.4, 0.0, 1.0));
+        vec3 Hs = normalize(L + V);
+        float NoH = max(dot(N, Hs), 0.0);
+        float rough = clamp(uRough + uSigma*0.20, 0.03, 0.6);
+        float a2 = rough*rough; a2 *= a2;
+        float dnm = NoH*NoH*(a2-1.0)+1.0;
+        float D = a2/(PI*dnm*dnm);                    // GGX 法线分布
+        float specF = 0.02 + 0.98*pow(1.0 - max(dot(Hs,V),0.0), 5.0);
+        float spec = min(D*specF, 12.0) * max(dot(N,L),0.0);
+        vec3 col = mix(base, refl, fres) + uSunColor * spec;
         // 岸线泡沫:窄带、低强度(贴岸 ~0.8m 深度内)
         float band = 1.0 - smoothstep(0.08, 0.9, vDepth);
         float fn = (texture2D(tDetail, vWorld.xz*0.06 + vec2(uTime*0.012)).x*2.0-1.0);
@@ -1591,7 +1601,7 @@ function updateVisuals(dt, st){
     u.uAmp.value=oceanAmp; u.uSigma.value=oceanSigma;
     u.uSunDir.value.copy(sunLight.position).normalize();
     u.uSunColor.value.copy(sunLight.color).multiplyScalar(Math.min(sunLight.intensity,2.0));
-    if(scene.fog) u.uSkyColor.value.copy(scene.fog.color);
+    if(scene.fog) u.uHorizonColor.value.copy(scene.fog.color);  // 地平线反射=当前雾色
     u.uCamPos.value.copy(camera.position);
   }
   if(shadowBlob&&legSpec){
