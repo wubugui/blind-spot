@@ -577,7 +577,7 @@ document.getElementById('btnHgBack').onclick=()=>{ show('screenMap'); refreshSta
    ================================================================ */
 let scene,camera,renderer,controls,ship,terrainMesh,destBeacon,windArrow;
 let curLeg=null, simRunning=true, timeScale=1, pendingMs=0, lastTs=null, paused=false;
-let shipProps=[], shipRudders=[], clouds=[], birds=[], fx=[], skipMode=false;
+let shipProps=[], shipRudders=[], clouds=[], birds=[], lowMist=[], fx=[], skipMode=false;
 let wpPos=null, wpGeo=null, wpLine=null, wpVel=null, wpTimer=0;
 const WP_N=160;
 
@@ -639,7 +639,7 @@ function initThree(){
 
 /* ---- 时段 × 生物群系 → 大气(太阳位置/散射/雾/曝光/灯光) ---- */
 const SLOT_SUN=[{el:9,az:95},{el:52,az:180},{el:8,az:262},{el:-14,az:300}]; // 黎明/正午/黄昏/夜
-const SLOT_FOG=['#d6b89a','#caddec','#e0a986','#1c2740'];
+const SLOT_FOG=['#dcc0a4','#d3dee7','#e6b492','#1c2740'];
 const SLOT_EXPO=[0.75,0.95,0.72,0.38];
 let atmoSlot=1, atmoT=0;
 function applyAtmosphere(biome, slot){
@@ -660,8 +660,8 @@ function applyAtmosphere(biome, slot){
   renderer.toneMappingExposure=SLOT_EXPO[slot];
   const fogC=new THREE.Color(SLOT_FOG[slot]);
   if(biome.startsWith('glacier')) fogC.lerp(new THREE.Color('#dcecf6'), slot===3?0.2:0.6);
-  // 强纵深空气透视:远山退入苍白薄雾(参考图核心氛围)
-  scene.fog=new THREE.Fog(fogC, 500, slot===3?7000:8500);
+  // 空气透视:渐进苍白薄雾,远山保持"可见但发白"而非被抹掉(参考图核心氛围)
+  scene.fog=new THREE.Fog(fogC, 700, slot===3?8000:11500);
   updateSunGlow(sunPos, slot);
   stars.material.opacity = slot===3?0.9:(slot===0?0.18:0);
 }
@@ -787,13 +787,14 @@ const PAL={
   grassA:new THREE.Color('#6c8a4c'), grassB:new THREE.Color('#89a55c'),
   dirt:new THREE.Color('#9a7e55'), sand:new THREE.Color('#d3c194'),
   rockA:new THREE.Color('#82817a'), rockB:new THREE.Color('#5f5b53'),
-  scrub:new THREE.Color('#8a8a52'), snow:new THREE.Color('#f2f6f9'),
+  scrub:new THREE.Color('#8a8a52'), snow:new THREE.Color('#f5f9fd'),
   ice:new THREE.Color('#bcdcec'), iceDeep:new THREE.Color('#8fc0dc'),
   ochre:new THREE.Color('#b5975c'), ochreB:new THREE.Color('#967c4e')};
 function terrainColor(biome,h,hMin,span,slope,nz,waterLevel){
   const c=new THREE.Color();
   const rel=(h-hMin)/span;
-  const snowline = hMin+span*0.72, rocky = slope>0.34;
+  const rocky = slope>0.34;
+  const snowJit=(nz-0.5)*0.14;                 // 雪线随噪声起伏 → 雪/岩边界斑驳自然
   if(biome.startsWith('glacier')){
     c.copy(PAL.snow);
     if(slope<0.18 && nz>0.55) c.lerp(PAL.ice, 0.5+0.4*Math.sin(nz*40));   // 冰裂纹带
@@ -802,17 +803,20 @@ function terrainColor(biome,h,hMin,span,slope,nz,waterLevel){
   } else if(biome==='ridge'||biome==='ridge_high'){
     c.copy(nz>0.5?PAL.rockA:PAL.rockB);
     if(rel<0.25&&slope<0.25) c.lerp(PAL.scrub,0.55);        // 谷底残存植被
-    if(h>snowline) c.lerp(PAL.snow, Math.min(1,(h-snowline)/(span*0.14)+nz*0.25));
+    const sl=0.52+snowJit;                                  // 大山雪顶从 ~52% 起
+    if(rel>sl && slope<0.62) c.lerp(PAL.snow, Math.min(1,(rel-sl)/0.12));  // 陡崖露岩
   } else if(biome.startsWith('plateau')){
     c.copy(nz>0.5?PAL.ochre:PAL.ochreB);
     if(nz>0.8) c.lerp(PAL.dirt,0.5);
     if(rocky) c.lerp(PAL.rockA,0.6);
-    if(h>hMin+span*0.85) c.lerp(PAL.snow,0.7);
+    const sl=0.80+snowJit;
+    if(rel>sl) c.lerp(PAL.snow, Math.min(1,(rel-sl)/0.14));
   } else if(biome==='foothill'){
     const g=PAL.grassA.clone().lerp(PAL.scrub, Math.min(1,rel*1.6));
     c.copy(nz>0.5?g:g.clone().lerp(PAL.grassB,0.5));
     if(rocky) c.copy(PAL.rockA).lerp(PAL.rockB,nz);
-    if(h>snowline+span*0.1) c.lerp(PAL.snow,0.8);
+    const sl=0.72+snowJit;
+    if(rel>sl) c.lerp(PAL.snow, Math.min(1,(rel-sl)/0.12));
   } else {  // plains / lake
     c.copy(nz>0.5?PAL.grassA:PAL.grassB);
     if(nz>0.82) c.lerp(PAL.dirt,0.45);                      // 田块/土斑
@@ -986,9 +990,9 @@ function makeOceanMaterial(){
       uSunDir:{value:new THREE.Vector3(0.4,0.8,0.2)},
       uSunColor:{value:new THREE.Color(0xfff2dd)},
       uSkyColor:{value:new THREE.Color(0x9db8d8)},
-      uDeepColor:{value:new THREE.Color(0x123f5e)},
-      uShallowColor:{value:new THREE.Color(0x2b7c8c)},
-      uSssColor:{value:new THREE.Color(0x1ba58e)},
+      uDeepColor:{value:new THREE.Color(0x1a4a72)},      // 自然深海蓝
+      uShallowColor:{value:new THREE.Color(0x3f77aa)},   // 近岸浅蓝(非青绿)
+      uSssColor:{value:new THREE.Color(0x5f95c6)},       // 透光偏蓝,不再翠绿
       uCamPos:{value:new THREE.Vector3()},
       uExposure:{value:1.0},
     },
@@ -1038,7 +1042,7 @@ function makeOceanMaterial(){
         float sss = pow(max(dot(V, Lt), 0.0), 3.5)
                   * clamp(vWave/(uSigma*2.0+0.001)*0.5+0.5, 0.0, 1.0)
                   * clamp(1.0 - vDepth*0.08, 0.35, 1.0);
-        base += uSssColor * sss * (1.0-fres) * 1.6;
+        base += uSssColor * sss * (1.0-fres) * 0.75;
         // 天空反射 + 太阳高光
         vec3 refl = uSkyColor * (0.85 + 0.3*max(N.y,0.0));
         float rv = max(dot(reflect(-L, N), V), 0.0);
@@ -1165,20 +1169,23 @@ function buildFarTerrain(grid, biome){
   const colors=new Float32Array(pos.count*3);
   let hMin=1e9,hMax=-1e9;
   for(const row of far.heights) for(const hh of row){hMin=Math.min(hMin,hh);hMax=Math.max(hMax,hh);}
-  const snowline=hMin+(hMax-hMin)*0.42;
-  const rockC=new THREE.Color(biome.startsWith('glacier')?'#9aabbd':'#7d8794');
+  const span=(hMax-hMin)||1;
+  const rockC=new THREE.Color(biome.startsWith('glacier')?'#9fb0c2':'#828d9c'); // 远山冷蓝灰
   const lowC =new THREE.Color(biome==='plains'||biome==='lake'?'#5f7d4c':
               biome.startsWith('plateau')?'#93794d':'#63707c');
-  const snowC=new THREE.Color('#eef4fb');
+  const snowC=new THREE.Color('#f2f7fd');
   for(let i=0;i<pos.count;i++){
     const ix=i%res, iz=Math.floor(i/res);
     const nIdx=res-1-iz, eIdx=ix;
     const h=far.heights[nIdx][eIdx];
     pos.setY(i, h-6);                                     // 略沉,近景网格盖在上面
+    const rel=(h-hMin)/span;
+    const nz=fbm(nIdx*0.19, eIdx*0.19, 3, 7);            // 雪线斑驳
     const c=lowC.clone();
-    const t1=Math.min(Math.max((h-hMin)/(snowline-hMin+1),0),1);
-    c.lerp(rockC, t1*0.9);
-    if(h>snowline) c.lerp(snowC, Math.min(1,(h-snowline)/((hMax-snowline)*0.35+1)));
+    const t1=Math.min(Math.max(rel/0.40,0),1);
+    c.lerp(rockC, t1*0.92);
+    const sl=0.44+(nz-0.5)*0.14;                          // 远山雪顶从 ~44% 起,边界起伏
+    if(rel>sl) c.lerp(snowC, Math.min(1,(rel-sl)/0.22));
     colors[i*3]=c.r; colors[i*3+1]=c.g; colors[i*3+2]=c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
@@ -1242,27 +1249,21 @@ function buildDecor(grid, biome){
     scene.add(im); decorMeshes.push(im);
     return im;
   }
-  const conifer=(biome!=='plains'&&biome!=='lake');
   const hasTrees=!biome.startsWith('glacier');
   if(hasTrees){
-    const trees=floraSample(Math.round(1500*q));
-    // 分配:松树 / 阔叶 按群系比例
-    const pineRatio = biome==='plains'||biome==='lake'?0.25:0.85;
+    const trees=floraSample(Math.round(1700*q));
+    // 参考图:整齐尖顶针叶林为主,少量圆冠阔叶点缀(简洁但不简陋)
+    const pineRatio = (biome==='plains'||biome==='lake')?0.62:0.9;
     const pines=[], leafs=[];
-    trees.forEach(t=>{ t.s=0.7+Math.random()*1.4; (Math.random()<pineRatio?pines:leafs).push(t); });
-    // 松:双层锥 + 干
-    inst(new THREE.ConeGeometry(3.0,7.5,7), '#2f5a33', 1, pines, 0,0, 6.5);
-    inst(new THREE.ConeGeometry(4.0,7,7),  '#37663a', 1, pines, 0,0, 3.2);
-    inst(new THREE.CylinderGeometry(0.5,0.7,3.4,5), '#5d4a33', 1, pines, 0,0, 1.6);
-    // 阔叶:多面体树冠 + 干
-    inst(new THREE.IcosahedronGeometry(4.2,0), '#4d7a35', 1, leafs, 0,0, 6.2);
-    inst(new THREE.CylinderGeometry(0.6,0.9,4.4,5), '#6b5233', 1, leafs, 0,0, 2.2);
-    // 灌木:球簇(两层)
-    const bushes=floraSample(Math.round(950*q));
-    bushes.forEach(b=>b.s=0.5+Math.random()*0.9);
-    inst(new THREE.SphereGeometry(2.4,6,5), '#5d8340', 1, bushes, 0,0, 1.8);
-    const bushes2=bushes.filter(()=>Math.random()<0.6).map(b=>({n:b.n+2.4*b.s,e:b.e+1.5*b.s,h:b.h,s:b.s*0.7}));
-    inst(new THREE.SphereGeometry(2.4,6,5), '#517738', 1, bushes2, 0,0, 1.8);
+    trees.forEach(t=>{ t.s=0.7+Math.random()*1.3; (Math.random()<pineRatio?pines:leafs).push(t); });
+    // 针叶松:三层锥收成尖顶 + 树干
+    inst(new THREE.ConeGeometry(1.7,4.2,6), '#2e5836', 1, pines, 0,0, 9.4);
+    inst(new THREE.ConeGeometry(2.5,4.6,6), '#33613b', 1, pines, 0,0, 6.2);
+    inst(new THREE.ConeGeometry(3.3,4.8,6), '#396b3f', 1, pines, 0,0, 3.0);
+    inst(new THREE.CylinderGeometry(0.45,0.65,2.6,5), '#5b4630', 1, pines, 0,0, 0.9);
+    // 圆冠阔叶(少量):低多边圆冠 + 干
+    inst(new THREE.IcosahedronGeometry(3.6,0), '#4a7638', 1, leafs, 0,0, 5.6);
+    inst(new THREE.CylinderGeometry(0.55,0.85,3.8,5), '#66502f', 1, leafs, 0,0, 1.9);
   }
   if(biome.includes('ridge')||biome.startsWith('plateau')||biome==='foothill'){
     const rocks=bareSample(Math.round(420*q), (h,f)=>f<0.25);
@@ -1394,6 +1395,9 @@ function updateClouds(dt, w){
     if(c.position.z-ship.position.z>3400)c.position.z-=6800;
     if(ship.position.z-c.position.z>3400)c.position.z+=6800;
   }
+  for(const m of lowMist){                       // 谷雾:随风缓移(贴地,不做大范围回收)
+    m.position.x+=w.x*dt*0.35; m.position.z+=w.z*dt*0.35;
+  }
 }
 /* ---- 海鸥:低多边形二面角机翼,拍翼滑翔,给尺度与运动参照(对标参考图) ---- */
 function makeGull(mat){
@@ -1439,6 +1443,40 @@ function updateBirds(dt){
             +(Math.random()-0.5)*1.2;
       b.bob=ship.position.y-30+Math.random()*140;
     }
+  }
+}
+/* ---- 低空谷雾:柔软薄雾团常驻低地/谷/近水,复刻参考图群山间的低云与高度雾 ---- */
+function buildLowMist(grid, slot){
+  lowMist.forEach(m=>scene.remove(m)); lowMist=[];
+  if(slot===3) return;                          // 夜间不铺
+  if(G&&G.gfxLow) return;
+  ensureTex();
+  const res=grid.res, hn=grid.half_n, he=grid.half_e;
+  const WH=grid.water_h, Hs=grid.heights;
+  let hMin=1e9,hMax=-1e9;
+  for(const row of Hs) for(const v of row){ if(v<hMin)hMin=v; if(v>hMax)hMax=v; }
+  const span=Math.max(hMax-hMin,1);
+  const cellN=2*hn/(res-1), cellE=2*he/(res-1);
+  const tint=new THREE.Color(slot===0?0xf4e6d8:(slot===2?0xf0dcc8:0xeef4f9));
+  const N=28; let tries=0;
+  while(lowMist.length<N && tries++<N*10){
+    const i=2+Math.floor(Math.random()*(res-4)), j=2+Math.floor(Math.random()*(res-4));
+    const h=Hs[i][j], rel=(h-hMin)/span, nearW=WH[i][j]!==null;
+    if(!nearW && rel>0.45) continue;            // 只在低地/谷/近水成带
+    const n=grid.center_n-hn+i*cellN, e=grid.center_e-he+j*cellE;
+    const g=new THREE.Group();
+    const w=280+Math.random()*380;
+    for(let k=0;k<3+Math.floor(Math.random()*3);k++){
+      const mat=new THREE.SpriteMaterial({map:TEX.cloud, color:tint,
+        transparent:true, opacity:0.13+Math.random()*0.15, depthWrite:false, fog:true});
+      const sp=new THREE.Sprite(mat);
+      const sw=w*(0.6+Math.random()*0.6);
+      sp.scale.set(sw, sw*0.30, 1);
+      sp.position.set((Math.random()-0.5)*w, (Math.random()-0.2)*18, (Math.random()-0.5)*w*0.5);
+      g.add(sp);
+    }
+    g.position.set(e, (nearW?WH[i][j]:h)+16+Math.random()*44, -n);
+    scene.add(g); lowMist.push(g);
   }
 }
 /* ---- 抛压舱水花 / 放氦白雾 ---- */
@@ -1593,6 +1631,7 @@ function startLeg(fromId,toId,slot){
   const h0=heightAt(grid, 0, 0);
   buildClouds(h0+60, slot, legSpec.meta.biome);
   buildBirds(h0+45);
+  buildLowMist(grid, slot);
   // 出发也消耗一个时段
   G.slot=(G.slot+1)%4; if(G.slot===0) G.day++;
   show('screenFlight');
