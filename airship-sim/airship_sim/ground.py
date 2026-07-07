@@ -289,23 +289,23 @@ class WorldTerrain(Terrain):
         t = np.clip(((N - self._a[0]) * ab[0] + (E - self._a[1]) * ab[1]) / L2, 0, 1)
         dn = N - (self._a[0] + t * ab[0]); de = E - (self._a[1] + t * ab[1])
         d_corr = np.sqrt(dn * dn + de * de)
-        f_far = np.clip((d_corr - 700.0) / 2600.0, 0.0, 1.0)
+        f_far = np.clip((d_corr - 450.0) / 1800.0, 0.0, 1.0)
         f_far = f_far * f_far * (3 - 2 * f_far)
 
         # 群系起伏参数(近走廊 amp_near 保证可飞,远处 amp_far 造雪山)
         B = self._biome
         prm = {
-            "plains":       (18.0, 130.0, 0.25, 3),
-            "lake":         (8.0,  90.0,  0.2,  3),
-            "lake_open":    (4.0,  60.0,  0.15, 3),
-            "foothill":     (45.0, 650.0, 0.55, 4),
-            "ridge":        (55.0, 1250.0, 0.75, 4),
-            "ridge_high":   (60.0, 1500.0, 0.8,  4),
-            "plateau_climb": (40.0, 900.0, 0.6,  4),
-            "plateau":      (30.0, 750.0, 0.5,  4),
-            "glacier_app":  (45.0, 1500.0, 0.7,  4),
-            "glacier":      (50.0, 1800.0, 0.75, 4),
-        }.get(B, (20.0, 150.0, 0.3, 3))
+            "plains":       (30.0, 220.0, 0.25, 3),
+            "lake":         (14.0, 160.0, 0.2,  3),
+            "lake_open":    (6.0,  100.0, 0.15, 3),
+            "foothill":     (70.0, 900.0, 0.55, 4),
+            "ridge":        (85.0, 1650.0, 0.75, 4),
+            "ridge_high":   (90.0, 2000.0, 0.8,  4),
+            "plateau_climb": (60.0, 1200.0, 0.6,  4),
+            "plateau":      (50.0, 1000.0, 0.5,  4),
+            "glacier_app":  (70.0, 2000.0, 0.7,  4),
+            "glacier":      (80.0, 2400.0, 0.75, 4),
+        }.get(B, (30.0, 240.0, 0.3, 3))
         amp_near, amp_far, ridge_mix, octs = prm
 
         # 域扭曲脊状分形
@@ -448,8 +448,8 @@ class WorldTerrain(Terrain):
         return self.water_h(n_m, e_m) is not None
 
     # ---- 导出(渲染) ----
-    def export_grids(self, near_res: int = 160, far_res: int = 96,
-                     far_half_m: float = 22000.0) -> dict:
+    def export_grids(self, near_res: int = 224, far_res: int = 144,
+                     far_half_m: float = 16000.0) -> dict:
         """近景精细网格(高度/水面/植被密度) + 远景粗网格(雪山)。"""
         n = self._n
         idx = np.linspace(0, n - 1, near_res).astype(int)
@@ -510,15 +510,15 @@ class WorldTerrain(Terrain):
         L2 = float(ab @ ab) + 1e-9
         t = np.clip(((N - self._a[0]) * ab[0] + (E - self._a[1]) * ab[1]) / L2, 0, 1)
         dn = N - (self._a[0] + t * ab[0]); de = E - (self._a[1] + t * ab[1])
-        f_far = np.clip((np.sqrt(dn * dn + de * de) - 700.0) / 2600.0, 0, 1)
+        f_far = np.clip((np.sqrt(dn * dn + de * de) - 450.0) / 1800.0, 0, 1)
         f_far = f_far * f_far * (3 - 2 * f_far)
         prm = {
-            "plains": (18.0, 130.0, 0.25, 3), "lake": (8.0, 90.0, 0.2, 3),
-            "lake_open": (4.0, 60.0, 0.15, 3), "foothill": (45.0, 650.0, 0.55, 4),
-            "ridge": (55.0, 1250.0, 0.75, 4), "ridge_high": (60.0, 1500.0, 0.8, 4),
-            "plateau_climb": (40.0, 900.0, 0.6, 4), "plateau": (30.0, 750.0, 0.5, 4),
-            "glacier_app": (45.0, 1500.0, 0.7, 4), "glacier": (50.0, 1800.0, 0.75, 4),
-        }.get(self._biome, (20.0, 150.0, 0.3, 3))
+            "plains": (30.0, 220.0, 0.25, 3), "lake": (14.0, 160.0, 0.2, 3),
+            "lake_open": (6.0, 100.0, 0.15, 3), "foothill": (70.0, 900.0, 0.55, 4),
+            "ridge": (85.0, 1650.0, 0.75, 4), "ridge_high": (90.0, 2000.0, 0.8, 4),
+            "plateau_climb": (60.0, 1200.0, 0.6, 4), "plateau": (50.0, 1000.0, 0.5, 4),
+            "glacier_app": (70.0, 2000.0, 0.7, 4), "glacier": (80.0, 2400.0, 0.75, 4),
+        }.get(self._biome, (30.0, 240.0, 0.3, 3))
         amp_near, amp_far, ridge_mix, octs = prm
         scale = 1.0 / 2600.0
         WX = _np_fbm(N * scale * 0.6, E * scale * 0.6, 2, self._seed + 91) * 2.2
