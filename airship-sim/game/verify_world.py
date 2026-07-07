@@ -24,7 +24,7 @@ SHIPS = {
     "mid":  {"envelope": {"len_m": 30, "dia_m": 9.6, "skin_kg": 200},
              "fins": {"s_m2": 48, "mass_kg": 95},
              "motor": {"t_max_N": 750, "mass_kg": 170, "disc_m2": 8.0},
-             "battery": {"wh": 20000, "mass_kg": 100}},
+             "battery": {"wh": 30000, "mass_kg": 150}},
     "top":  {"envelope": {"len_m": 35, "dia_m": 11.2, "skin_kg": 290},
              "fins": {"s_m2": 48, "mass_kg": 95},
              "motor": {"t_max_N": 750, "mass_kg": 170, "disc_m2": 8.0},
@@ -64,7 +64,7 @@ def fly(from_id: str, to_id: str, slot: int, verbose: bool = False) -> dict:
             "seed": 11}
     gc.start_leg(json.dumps(spec))
     gc.leg_command(json.dumps({"type": "cruise", "on": True, "speed": 10.0}))
-    cap_s = leg["dist"] / 3.5 + 520.0 + abs(d_alt) * 0.8
+    cap_s = leg["dist"] / 3.5 + 650.0 + abs(d_alt) * 0.9
     st = None
     t0 = time.time()
     while True:

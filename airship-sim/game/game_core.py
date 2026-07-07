@@ -185,10 +185,11 @@ class Leg:
                     dist_dest = float(np.hypot(*(self.dest - p[0:2])))
                     look = min(30.0 * v_g, max(dist_dest, 150.0))
                     hn = self.terrain.height_m(float(p[0]), float(p[1]))
+                    # 含后方采样(-0.35):障碍模式会倒车,倒着漂不能瞎
                     ha = max(self.terrain.height_m(
                                  float(p[0] + f * look * math.cos(yaw_now)),
                                  float(p[1] + f * look * math.sin(yaw_now)))
-                             for f in (0.35, 0.5, 0.75, 1.0, 1.5, 2.0))
+                             for f in (-0.35, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0))
                     clearance = 35.0 + min(0.9 * max(ha - hn, 0.0), 110.0)
                     need = ha + clearance
                     if sp.altitude_m < need:
@@ -229,7 +230,7 @@ class Leg:
                         wind_along = (float(atm_w[0]) * math.cos(yaw_now)
                                       + float(atm_w[1]) * math.sin(yaw_now))
                         u_cmd = float(np.clip(self.speed_target * min(f1, f2) - wind_along,
-                                              -3.0, self.speed_target))
+                                              -1.5, self.speed_target))
                         sp.speed_m_s = min(sp.speed_m_s, u_cmd)
                     else:
                         sp.speed_m_s = min(sp.speed_m_s, self.speed_target * f1)

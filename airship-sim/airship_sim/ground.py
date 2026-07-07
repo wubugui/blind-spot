@@ -220,14 +220,23 @@ def _np_vnoise(X, Y, seed):
 
 
 def _np_fbm(X, Y, octaves, seed, ridged=False):
+    """分形噪声。ridged 用平滑绝对值(sqrt(d²+ε²))替代 |d|:普通 ridged 在每条
+    脊线上是 C0 折痕,渲染出来山顶全是刀刃/针尖;ε 圆角化脊线且高频衰减更快
+    (针尖主要来自高倍频程的脊噪声)。"""
     v = np.zeros_like(X); amp = 1.0; f = 1.0; tot = 0.0
+    eps2 = 0.055                                  # ε≈0.23:脊线圆角半径(归一化)
     for o in range(octaves):
         n = _np_vnoise(X * f, Y * f, seed + o * 13)
         if ridged:
-            n = 1.0 - np.abs(2.0 * n - 1.0)
+            d = 2.0 * n - 1.0
+            n = (1.0 - np.sqrt(d * d + eps2)) / (1.0 - np.sqrt(eps2))
+            n = np.clip(n, 0.0, None)
             n = n * n
-        v += amp * n; tot += amp
-        amp *= 0.52; f *= 2.05
+            v += amp * n; tot += amp
+            amp *= 0.42; f *= 2.05                # 脊噪声高频快衰减(去针尖)
+        else:
+            v += amp * n; tot += amp
+            amp *= 0.52; f *= 2.05
     return v / tot
 
 
@@ -299,8 +308,8 @@ class WorldTerrain(Terrain):
             "lake":         (14.0, 160.0, 0.2,  3),
             "lake_open":    (6.0,  100.0, 0.15, 3),
             "foothill":     (70.0, 900.0, 0.55, 4),
-            "ridge":        (85.0, 1650.0, 0.75, 4),
-            "ridge_high":   (90.0, 2000.0, 0.8,  4),
+            "ridge":        (65.0, 1650.0, 0.75, 4),
+            "ridge_high":   (70.0, 2000.0, 0.8,  4),
             "plateau_climb": (60.0, 1200.0, 0.6,  4),
             "plateau":      (50.0, 1000.0, 0.5,  4),
             "glacier_app":  (70.0, 2000.0, 0.7,  4),
@@ -316,6 +325,7 @@ class WorldTerrain(Terrain):
         ridge_n = _np_fbm(N * scale * 1.4 + WY, E * scale * 1.4 + WX, octs,
                           self._seed + 7, ridged=True)
         relief = (1 - ridge_mix) * (base_n - 0.5) * 2.0 + ridge_mix * (ridge_n - 0.35) * 2.2
+        relief = np.tanh(relief * 1.4) / 1.4      # 峰顶软压缩:圆顶而非尖点
         amp = amp_near + (amp_far - amp_near) * f_far
         H += relief * amp
 
@@ -327,7 +337,7 @@ class WorldTerrain(Terrain):
             H += float(r["height_m"]) * np.exp(-(xi / float(r["halfwidth_m"])) ** 2)
 
         # 热侵蚀式平滑(去尖刺,山形更真实)
-        for _ in range(2):
+        for _ in range(4):
             Hs = H.copy()
             Hs[1:-1, 1:-1] = (H[1:-1, 1:-1] * 0.6
                               + 0.1 * (H[:-2, 1:-1] + H[2:, 1:-1]
@@ -448,7 +458,7 @@ class WorldTerrain(Terrain):
         return self.water_h(n_m, e_m) is not None
 
     # ---- 导出(渲染) ----
-    def export_grids(self, near_res: int = 224, far_res: int = 144,
+    def export_grids(self, near_res: int = 224, far_res: int = 176,
                      far_half_m: float = 16000.0) -> dict:
         """近景精细网格(高度/水面/植被密度) + 远景粗网格(雪山)。"""
         n = self._n
@@ -485,6 +495,12 @@ class WorldTerrain(Terrain):
         fx = np.linspace(-far_half_m, far_half_m, far_res)
         FN, FE = np.meshgrid(fx + self._c[0], fx + self._c[1], indexing="ij")
         FH = self._far_height(FN, FE)
+        for _ in range(4):                        # 远景平滑:粗采样下峰顶圆润化
+            FS = FH.copy()
+            FS[1:-1, 1:-1] = (FH[1:-1, 1:-1] * 0.4
+                              + 0.15 * (FH[:-2, 1:-1] + FH[2:, 1:-1]
+                                        + FH[1:-1, :-2] + FH[1:-1, 2:]))
+            FH = FS
 
         rnd2 = lambda A: [[round(float(v), 1) for v in row] for row in A]
         wl_out = [[(round(float(v), 1) if not np.isnan(v) else None) for v in row]
@@ -515,7 +531,7 @@ class WorldTerrain(Terrain):
         prm = {
             "plains": (30.0, 220.0, 0.25, 3), "lake": (14.0, 160.0, 0.2, 3),
             "lake_open": (6.0, 100.0, 0.15, 3), "foothill": (70.0, 900.0, 0.55, 4),
-            "ridge": (85.0, 1650.0, 0.75, 4), "ridge_high": (90.0, 2000.0, 0.8, 4),
+            "ridge": (65.0, 1650.0, 0.75, 4), "ridge_high": (70.0, 2000.0, 0.8, 4),
             "plateau_climb": (60.0, 1200.0, 0.6, 4), "plateau": (50.0, 1000.0, 0.5, 4),
             "glacier_app": (70.0, 2000.0, 0.7, 4), "glacier": (80.0, 2400.0, 0.75, 4),
         }.get(self._biome, (30.0, 240.0, 0.3, 3))
@@ -527,4 +543,5 @@ class WorldTerrain(Terrain):
         ridge_n = _np_fbm(N * scale * 1.4 + WY, E * scale * 1.4 + WX, octs,
                           self._seed + 7, ridged=True)
         relief = (1 - ridge_mix) * (base_n - 0.5) * 2.0 + ridge_mix * (ridge_n - 0.35) * 2.2
+        relief = np.tanh(relief * 1.4) / 1.4
         return H + relief * (amp_near + (amp_far - amp_near) * f_far)
