@@ -639,7 +639,7 @@ function initThree(){
 
 /* ---- 时段 × 生物群系 → 大气(太阳位置/散射/雾/曝光/灯光) ---- */
 const SLOT_SUN=[{el:9,az:95},{el:52,az:180},{el:8,az:262},{el:-14,az:300}]; // 黎明/正午/黄昏/夜
-const SLOT_FOG=['#dcc0a4','#d3dee7','#e6b492','#1c2740'];
+const SLOT_FOG=['#dcc0a4','#a9bdca','#e6b492','#1c2740'];  // 正午雾=参考图钢青薄雾
 const SLOT_EXPO=[0.75,0.95,0.72,0.38];
 let atmoSlot=1, atmoT=0;
 function applyAtmosphere(biome, slot){
@@ -649,14 +649,15 @@ function applyAtmosphere(biome, slot){
   const sunPos=new THREE.Vector3().setFromSphericalCoords(1,phi,theta);
   const u=sky.material.uniforms;
   u.sunPosition.value.copy(sunPos);
-  const hazy=biome.startsWith('plateau')?4:(biome.startsWith('glacier')?2:6);
+  const hazy=biome.startsWith('plateau')?5:(biome.startsWith('glacier')?3:7);
   u.turbidity.value = slot===3?2:hazy;
-  u.rayleigh.value  = slot===1?1.6:(slot===3?0.4:3.2);   // 黎明/黄昏更红
-  u.mieCoefficient.value=0.004; u.mieDirectionalG.value=0.8;
+  u.rayleigh.value  = slot===1?2.0:(slot===3?0.4:3.2);   // 正午偏蓝但去饱和(对标参考)
+  u.mieCoefficient.value=slot===1?0.006:0.004;           // 更强前向散射→近日washed
+  u.mieDirectionalG.value=0.8;
   sunLight.position.copy(sunPos).multiplyScalar(8000);
-  sunLight.intensity = slot===3?0.25:(slot===1?2.6:1.8);
-  sunLight.color.set(slot===0?0xffd9b0:(slot===2?0xffb47a:(slot===3?0x8fa5d8:0xffffff)));
-  hemiLight.intensity = slot===3?0.25:0.65;
+  sunLight.intensity = slot===3?0.25:(slot===1?1.95:1.65);   // 柔化:降低正午硬对比
+  sunLight.color.set(slot===0?0xffd9b0:(slot===2?0xffb47a:(slot===3?0x8fa5d8:0xfff6ea)));
+  hemiLight.intensity = slot===3?0.28:0.92;                   // 抬高补光→高调低对比(对标参考)
   renderer.toneMappingExposure=SLOT_EXPO[slot];
   const fogC=new THREE.Color(SLOT_FOG[slot]);
   if(biome.startsWith('glacier')) fogC.lerp(new THREE.Color('#dcecf6'), slot===3?0.2:0.6);
@@ -672,7 +673,7 @@ function buildShipMesh(lenM, diaM){
   const a=lenM/2, b=diaM/2;
   // 低多边形艇身:平面着色、低分段——刻面质感对标参考图
   const hull=new THREE.Mesh(new THREE.SphereGeometry(1,16,11),
-    new THREE.MeshStandardMaterial({color:0xeef1f4,roughness:.62,flatShading:true}));
+    new THREE.MeshStandardMaterial({color:0xece7db,roughness:.62,flatShading:true}));
   hull.scale.set(b,b,a); ship.add(hull);
   // 木质吊舱(暖棕)
   const gond=new THREE.Mesh(new THREE.BoxGeometry(b*0.5,b*0.35,a*0.3),
@@ -784,12 +785,13 @@ function ensureTex(){
 
 /* ---- 地表配色:按群系可辨识(高度/坡度/噪声三通道) ---- */
 const PAL={
-  grassA:new THREE.Color('#6c8a4c'), grassB:new THREE.Color('#89a55c'),
-  dirt:new THREE.Color('#9a7e55'), sand:new THREE.Color('#d3c194'),
-  rockA:new THREE.Color('#82817a'), rockB:new THREE.Color('#5f5b53'),
-  scrub:new THREE.Color('#8a8a52'), snow:new THREE.Color('#f5f9fd'),
-  ice:new THREE.Color('#bcdcec'), iceDeep:new THREE.Color('#8fc0dc'),
-  ochre:new THREE.Color('#b5975c'), ochreB:new THREE.Color('#967c4e')};
+  // 采样自参考图:去饱和苔绿、暖白雪、冷浅灰岩
+  grassA:new THREE.Color('#647d5e'), grassB:new THREE.Color('#758b62'),
+  dirt:new THREE.Color('#8f7a58'), sand:new THREE.Color('#cabf98'),
+  rockA:new THREE.Color('#969ba1'), rockB:new THREE.Color('#6c7076'),
+  scrub:new THREE.Color('#7c8358'), snow:new THREE.Color('#f1ecdd'),
+  ice:new THREE.Color('#c3dae6'), iceDeep:new THREE.Color('#93bdd6'),
+  ochre:new THREE.Color('#ab9160'), ochreB:new THREE.Color('#8d7852')};
 function terrainColor(biome,h,hMin,span,slope,nz,waterLevel){
   const c=new THREE.Color();
   const rel=(h-hMin)/span;
@@ -990,8 +992,8 @@ function makeOceanMaterial(){
       uSunDir:{value:new THREE.Vector3(0.4,0.8,0.2)},
       uSunColor:{value:new THREE.Color(0xfff2dd)},
       uSkyColor:{value:new THREE.Color(0x9db8d8)},
-      uDeepColor:{value:new THREE.Color(0x1a4a72)},      // 自然深海蓝
-      uShallowColor:{value:new THREE.Color(0x3f77aa)},   // 近岸浅蓝(非青绿)
+      uDeepColor:{value:new THREE.Color(0x174468)},      // 采样自参考图前景深海
+      uShallowColor:{value:new THREE.Color(0x4884ac)},   // 采样自参考图中景水色
       uSssColor:{value:new THREE.Color(0x5f95c6)},       // 透光偏蓝,不再翠绿
       uCamPos:{value:new THREE.Vector3()},
       uExposure:{value:1.0},
@@ -1171,8 +1173,8 @@ function buildFarTerrain(grid, biome){
   for(const row of far.heights) for(const hh of row){hMin=Math.min(hMin,hh);hMax=Math.max(hMax,hh);}
   const span=(hMax-hMin)||1;
   const rockC=new THREE.Color(biome.startsWith('glacier')?'#9fb0c2':'#828d9c'); // 远山冷蓝灰
-  const lowC =new THREE.Color(biome==='plains'||biome==='lake'?'#5f7d4c':
-              biome.startsWith('plateau')?'#93794d':'#63707c');
+  const lowC =new THREE.Color(biome==='plains'||biome==='lake'?'#5c7358':
+              biome.startsWith('plateau')?'#8d7852':'#63707c');
   const snowC=new THREE.Color('#f2f7fd');
   for(let i=0;i<pos.count;i++){
     const ix=i%res, iz=Math.floor(i/res);
@@ -1257,12 +1259,12 @@ function buildDecor(grid, biome){
     const pines=[], leafs=[];
     trees.forEach(t=>{ t.s=0.7+Math.random()*1.3; (Math.random()<pineRatio?pines:leafs).push(t); });
     // 针叶松:三层锥收成尖顶 + 树干
-    inst(new THREE.ConeGeometry(1.7,4.2,6), '#2e5836', 1, pines, 0,0, 9.4);
-    inst(new THREE.ConeGeometry(2.5,4.6,6), '#33613b', 1, pines, 0,0, 6.2);
-    inst(new THREE.ConeGeometry(3.3,4.8,6), '#396b3f', 1, pines, 0,0, 3.0);
+    inst(new THREE.ConeGeometry(1.7,4.2,6), '#2c473a', 1, pines, 0,0, 9.4);
+    inst(new THREE.ConeGeometry(2.5,4.6,6), '#315240', 1, pines, 0,0, 6.2);
+    inst(new THREE.ConeGeometry(3.3,4.8,6), '#385c46', 1, pines, 0,0, 3.0);
     inst(new THREE.CylinderGeometry(0.45,0.65,2.6,5), '#5b4630', 1, pines, 0,0, 0.9);
     // 圆冠阔叶(少量):低多边圆冠 + 干
-    inst(new THREE.IcosahedronGeometry(3.6,0), '#4a7638', 1, leafs, 0,0, 5.6);
+    inst(new THREE.IcosahedronGeometry(3.6,0), '#466549', 1, leafs, 0,0, 5.6);
     inst(new THREE.CylinderGeometry(0.55,0.85,3.8,5), '#66502f', 1, leafs, 0,0, 1.9);
   }
   if(biome.includes('ridge')||biome.startsWith('plateau')||biome==='foothill'){
@@ -1337,7 +1339,7 @@ function updateWindViz(dt){
   wpGeo.attributes.position.needsUpdate=true;
 }
 /* ---- 云层 v2:软精灵集群(程序化贴图,随时段调色,随风漂移) ---- */
-const SLOT_CLOUD_TINT=[0xf6d9c0, 0xffffff, 0xf3b98e, 0x3b4660];
+const SLOT_CLOUD_TINT=[0xf6d9c0, 0xf0e2d2, 0xf3b98e, 0x3b4660];  // 正午云=参考图暖奶白
 function buildClouds(baseY, slot=1, biome='plains'){
   ensureTex();
   clouds.forEach(c=>scene.remove(c)); clouds=[];
