@@ -603,8 +603,8 @@ function initThree(){
   renderer=new THREE.WebGLRenderer({antialias:true});
   renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));   // 性能预算
   renderer.outputColorSpace=THREE.SRGBColorSpace;
-  renderer.toneMapping=THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure=0.85;
+  renderer.toneMapping=THREE.CineonToneMapping;   // 比 ACES 更饱满鲜明(ACES 去饱和→死灰)
+  renderer.toneMappingExposure=0.95;
   view.appendChild(renderer.domElement);
   controls=new OrbitControls(camera,renderer.domElement);
   const resize=()=>{ const w=view.clientWidth||innerWidth,h=view.clientHeight||innerHeight;
@@ -639,8 +639,8 @@ function initThree(){
 
 /* ---- 时段 × 生物群系 → 大气(太阳位置/散射/雾/曝光/灯光) ---- */
 const SLOT_SUN=[{el:9,az:95},{el:52,az:180},{el:8,az:262},{el:-14,az:300}]; // 黎明/正午/黄昏/夜
-const SLOT_FOG=['#dcc0a4','#a9bdca','#e6b492','#1c2740'];  // 正午雾=参考图钢青薄雾
-const SLOT_EXPO=[0.75,0.95,0.72,0.38];
+const SLOT_FOG=['#e2c8ac','#bcd4e6','#ecbe98','#1c2740'];  // 正午雾=清透天蓝(只在远处去饱和)
+const SLOT_EXPO=[0.88,1.06,0.84,0.44];   // Cineon 偏暗→整体抬亮,保持鲜明
 let atmoSlot=1, atmoT=0;
 function applyAtmosphere(biome, slot){
   atmoSlot=slot; atmoT=0;
@@ -655,14 +655,14 @@ function applyAtmosphere(biome, slot){
   u.mieCoefficient.value=slot===1?0.006:0.004;           // 更强前向散射→近日washed
   u.mieDirectionalG.value=0.8;
   sunLight.position.copy(sunPos).multiplyScalar(8000);
-  sunLight.intensity = slot===3?0.25:(slot===1?1.95:1.65);   // 柔化:降低正午硬对比
+  sunLight.intensity = slot===3?0.3:(slot===1?2.7:2.2);       // 强主光→低多边形亮/暗面立体
   sunLight.color.set(slot===0?0xffd9b0:(slot===2?0xffb47a:(slot===3?0x8fa5d8:0xfff6ea)));
-  hemiLight.intensity = slot===3?0.28:0.92;                   // 抬高补光→高调低对比(对标参考)
+  hemiLight.intensity = slot===3?0.28:0.5;                    // 降回补光→恢复对比/饱和(不发灰)
   renderer.toneMappingExposure=SLOT_EXPO[slot];
   const fogC=new THREE.Color(SLOT_FOG[slot]);
   if(biome.startsWith('glacier')) fogC.lerp(new THREE.Color('#dcecf6'), slot===3?0.2:0.6);
-  // 空气透视:渐进苍白薄雾,远山保持"可见但发白"而非被抹掉(参考图核心氛围)
-  scene.fog=new THREE.Fog(fogC, 700, slot===3?8000:11500);
+  // 空气透视:近景清晰饱满,只在"远处"渐入薄雾去饱和(参考图核心氛围)
+  scene.fog=new THREE.Fog(fogC, 1500, slot===3?8500:13000);
   updateSunGlow(sunPos, slot);
   stars.material.opacity = slot===3?0.9:(slot===0?0.18:0);
 }
@@ -785,13 +785,13 @@ function ensureTex(){
 
 /* ---- 地表配色:按群系可辨识(高度/坡度/噪声三通道) ---- */
 const PAL={
-  // 采样自参考图:去饱和苔绿、暖白雪、冷浅灰岩
-  grassA:new THREE.Color('#647d5e'), grassB:new THREE.Color('#758b62'),
-  dirt:new THREE.Color('#8f7a58'), sand:new THREE.Color('#cabf98'),
-  rockA:new THREE.Color('#969ba1'), rockB:new THREE.Color('#6c7076'),
-  scrub:new THREE.Color('#7c8358'), snow:new THREE.Color('#f1ecdd'),
-  ice:new THREE.Color('#c3dae6'), iceDeep:new THREE.Color('#93bdd6'),
-  ochre:new THREE.Color('#ab9160'), ochreB:new THREE.Color('#8d7852')};
+  // 近景基色鲜明饱满(空气透视由雾在"远处"完成,基色不预先去饱和)
+  grassA:new THREE.Color('#5a9a3e'), grassB:new THREE.Color('#79b84c'),
+  dirt:new THREE.Color('#9d8452'), sand:new THREE.Color('#ddcf9c'),
+  rockA:new THREE.Color('#8d97a1'), rockB:new THREE.Color('#5c646f'),
+  scrub:new THREE.Color('#8f9a4c'), snow:new THREE.Color('#f3f8ff'),
+  ice:new THREE.Color('#bfe2f1'), iceDeep:new THREE.Color('#83c2de'),
+  ochre:new THREE.Color('#c19a4e'), ochreB:new THREE.Color('#9e8140')};
 function terrainColor(biome,h,hMin,span,slope,nz,waterLevel){
   const c=new THREE.Color();
   const rel=(h-hMin)/span;
@@ -993,9 +993,9 @@ function makeOceanMaterial(){
       uSunColor:{value:new THREE.Color(0xfff2dd)},
       uSkyColor:{value:new THREE.Color(0x8fb0cf)},       // 天顶反射蓝
       uHorizonColor:{value:new THREE.Color(0xaebfcb)},   // 地平线反射(=雾色,运行时更新)
-      uDeepColor:{value:new THREE.Color(0x123d5e)},      // 深水吸收色
-      uShallowColor:{value:new THREE.Color(0x3f7ba0)},   // 浅水
-      uSssColor:{value:new THREE.Color(0x2fa085)},       // 次表面散射:海绿透光(仅浪峰/逆光)
+      uDeepColor:{value:new THREE.Color(0x104a7c)},      // 深水吸收色(鲜明深蓝)
+      uShallowColor:{value:new THREE.Color(0x2f88c6)},   // 浅水(鲜明海蓝)
+      uSssColor:{value:new THREE.Color(0x1fab8c)},       // 次表面散射:海绿透光(仅浪峰/逆光)
       uCamPos:{value:new THREE.Vector3()},
       // 次表面散射(DICE/刺客信条式浪峰透光)
       uSssBase:{value:0.16}, uSssSun:{value:1.35}, uSssPow:{value:3.0}, uSssDistort:{value:0.18},
@@ -1183,8 +1183,8 @@ function buildFarTerrain(grid, biome){
   for(const row of far.heights) for(const hh of row){hMin=Math.min(hMin,hh);hMax=Math.max(hMax,hh);}
   const span=(hMax-hMin)||1;
   const rockC=new THREE.Color(biome.startsWith('glacier')?'#9fb0c2':'#828d9c'); // 远山冷蓝灰
-  const lowC =new THREE.Color(biome==='plains'||biome==='lake'?'#5c7358':
-              biome.startsWith('plateau')?'#8d7852':'#63707c');
+  const lowC =new THREE.Color(biome==='plains'||biome==='lake'?'#5a8a44':
+              biome.startsWith('plateau')?'#9e8140':'#61707a');
   const snowC=new THREE.Color('#f2f7fd');
   for(let i=0;i<pos.count;i++){
     const ix=i%res, iz=Math.floor(i/res);
@@ -1269,12 +1269,12 @@ function buildDecor(grid, biome){
     const pines=[], leafs=[];
     trees.forEach(t=>{ t.s=0.7+Math.random()*1.3; (Math.random()<pineRatio?pines:leafs).push(t); });
     // 针叶松:三层锥收成尖顶 + 树干
-    inst(new THREE.ConeGeometry(1.7,4.2,6), '#2c473a', 1, pines, 0,0, 9.4);
-    inst(new THREE.ConeGeometry(2.5,4.6,6), '#315240', 1, pines, 0,0, 6.2);
-    inst(new THREE.ConeGeometry(3.3,4.8,6), '#385c46', 1, pines, 0,0, 3.0);
+    inst(new THREE.ConeGeometry(1.7,4.2,6), '#2f6b39', 1, pines, 0,0, 9.4);
+    inst(new THREE.ConeGeometry(2.5,4.6,6), '#367a41', 1, pines, 0,0, 6.2);
+    inst(new THREE.ConeGeometry(3.3,4.8,6), '#3d854a', 1, pines, 0,0, 3.0);
     inst(new THREE.CylinderGeometry(0.45,0.65,2.6,5), '#5b4630', 1, pines, 0,0, 0.9);
     // 圆冠阔叶(少量):低多边圆冠 + 干
-    inst(new THREE.IcosahedronGeometry(3.6,0), '#466549', 1, leafs, 0,0, 5.6);
+    inst(new THREE.IcosahedronGeometry(3.6,0), '#4f9040', 1, leafs, 0,0, 5.6);
     inst(new THREE.CylinderGeometry(0.55,0.85,3.8,5), '#66502f', 1, leafs, 0,0, 1.9);
   }
   if(biome.includes('ridge')||biome.startsWith('plateau')||biome==='foothill'){
@@ -1578,14 +1578,14 @@ function updateAtmoDrift(dt){
   if(atmoSlot===0){                                   // 日出:光线转白变亮
     const k=Math.min(Math.max(el/28,0),1);
     sunLight.color.setHex(0xffd9b0).lerp(new THREE.Color(0xffffff),k);
-    sunLight.intensity=2.6-0.8*k+0.0*k;
-    renderer.toneMappingExposure=0.75+0.2*k;
+    sunLight.intensity=2.9-0.5*k;
+    renderer.toneMappingExposure=0.88+0.2*k;
     stars.material.opacity=Math.max(0,0.18*(1-el/14));
   }
   if(atmoSlot===2){                                   // 日落:更红更暗
     const k=Math.min(Math.max((8-el)/16,0),1);
     sunLight.color.setHex(0xffb47a).lerp(new THREE.Color(0xd96a3b),k*0.7);
-    renderer.toneMappingExposure=Math.max(0.45,0.72-0.2*k);
+    renderer.toneMappingExposure=Math.max(0.55,0.86-0.2*k);
     stars.material.opacity=Math.min(0.7,k*0.7);
   }
 }
